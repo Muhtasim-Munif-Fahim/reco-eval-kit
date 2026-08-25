@@ -20,6 +20,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+reco-eval-kit = "reco_eval_kit.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
