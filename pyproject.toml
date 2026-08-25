@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reco-eval-kit"
+version = "0.1.0"
+description = "Ranking and beyond-accuracy evaluation toolkit for implicit-feedback recommender systems"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Muhtasim Munif Fahim" }]
+keywords = ["recommender-systems", "evaluation", "information-retrieval", "machine-learning"]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
