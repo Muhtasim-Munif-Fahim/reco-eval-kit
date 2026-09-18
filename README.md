@@ -3,7 +3,7 @@
 Ranking and beyond-accuracy evaluation toolkit for implicit-feedback
 recommender systems. It ships the standard top-K metrics, catalog-level and
 list-level quality measures, leave-one-out / leave-last-N protocols, a seeded
-synthetic interaction generator, three baseline recommenders to score against,
+synthetic interaction generator, four baseline recommenders to score against,
 and a small CLI that ties the whole loop together and writes a markdown report.
 
 ## Features
@@ -21,7 +21,9 @@ and a small CLI that ties the whole loop together and writes a markdown report.
 - **Protocols** — chronological leave-one-out and leave-last-N splitting with
   minimum-history filters, plus rating thresholding for explicit feedback.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
-  and item-item co-occurrence counts with popularity fallback.
+  item-item co-occurrence counts with popularity fallback, and a lightweight
+  BPR matrix-factorization model (seeded SGD on implicit pairwise triples,
+  popularity fallback for unknown users).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
 ## Installation
@@ -43,7 +45,7 @@ pip install -e .
 ```python
 import pandas as pd
 from reco_eval_kit.metrics import precision_at_k, ndcg_at_k, mrr
-from reco_eval_kit.baselines import PopularityRecommender
+from reco_eval_kit.baselines import BPRRecommender, PopularityRecommender
 from reco_eval_kit.splitting import leave_one_out
 
 interactions = pd.DataFrame({
@@ -59,6 +61,9 @@ print(recs)                                   # e.g. [12, 13]
 print(precision_at_k(recs, relevant={12}, k=2))  # 0.5
 print(ndcg_at_k(recs, relevant={12}, k=2))
 print(mrr(recs, relevant={13}))
+
+bpr = BPRRecommender(seed=0).fit(train)
+print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 ```
 
 ### Generate synthetic data with learnable structure
@@ -73,8 +78,8 @@ features = generate_item_features(n_items=300, seed=43)
 ```
 
 Users belong to latent taste clusters; item draws mix cluster-favored slices
-with a Zipf-style global popularity distribution, so popularity and
-co-occurrence baselines both find real signal.
+with a Zipf-style global popularity distribution, so popularity,
+co-occurrence, and BPR baselines all find real signal.
 
 ### Beyond-accuracy measures
 
@@ -110,9 +115,9 @@ or after `pip install -e .`:
 reco-eval-kit --seed 7 --k 10
 ```
 
-The CLI generates data, splits leave-one-out, fits all three baselines,
+The CLI generates data, splits leave-one-out, fits all four baselines,
 averages every metric across test users, computes beyond-accuracy measures,
-and writes a markdown report.
+and writes a markdown report that includes each listed model.
 
 ### Bundled demo
 
@@ -144,7 +149,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, item-item co-occurrence
+    baselines.py         # popularity, random, item-item co-occurrence, BPR-MF
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite

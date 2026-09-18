@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from .baselines import (
+    BPRRecommender,
     ItemItemCooccurrenceRecommender,
     PopularityRecommender,
     RandomRecommender,
@@ -75,6 +76,7 @@ def main(argv=None) -> int:
         "popularity": PopularityRecommender(),
         f"random(seed={args.seed})": RandomRecommender(seed=args.seed),
         "item-item-cooccurrence": ItemItemCooccurrenceRecommender(),
+        f"bpr(seed={args.seed})": BPRRecommender(seed=args.seed),
     }
 
     results = {}
