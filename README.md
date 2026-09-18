@@ -13,8 +13,11 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   built from *all* relevant items (so short lists and missed hits are handled
   correctly); MAP@K caps its normalizer at K; duplicate recommendations raise.
 - **Beyond accuracy** — catalog coverage, novelty as mean self-information
-  `-log2(p(item))` with a probability floor for unseen items, and intra-list
-  diversity as mean pairwise cosine distance over item feature vectors.
+  `-log2(p(item))` with a probability floor for unseen items, intra-list
+  diversity as mean pairwise cosine distance over item feature vectors,
+  unexpectedness as `1 - p(item)` or cosine distance from a user's primitive
+  profile, and serendipity as the mean of relevance × unexpectedness in the
+  top-K.
 - **Protocols** — chronological leave-one-out and leave-last-N splitting with
   minimum-history filters, plus rating thresholding for explicit feedback.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
@@ -78,14 +81,20 @@ co-occurrence baselines both find real signal.
 ```python
 from reco_eval_kit.beyond_accuracy import (
     catalog_coverage, novelty, intra_list_diversity,
+    unexpectedness, profile_unexpectedness, serendipity,
 )
 
 lists = [[12, 13], [12, 14]]
+relevant = [{12}, {14}]
+histories = [{10, 11}, {10}]
 popularity = train["item_id"].value_counts().to_dict()
 
 catalog_coverage(lists, catalog=300)
 novelty(lists, popularity)
 intra_list_diversity(lists, features)
+unexpectedness(lists, popularity)
+profile_unexpectedness(lists, histories, features)
+serendipity(lists, relevant, item_popularity=popularity)
 ```
 
 ### End-to-end CLI
@@ -121,13 +130,18 @@ writes `examples/output/demo_report.md`.
 - NDCG@K discounts gains by `1/log2(rank + 1)`; the ideal side sorts every
   relevant item's gain descending before truncating at `k`.
 - MRR is the reciprocal rank of the first relevant hit; `0.0` without one.
+- Unexpectedness is the mean of `1 - p(item)` over recommended entries.
+- Profile unexpectedness is mean cosine distance from each user's primitive
+  profile (the mean history vector), clipped to `[0, 1]`.
+- Serendipity averages `relevant(i) * unexpected(i)` per user; with a cutoff
+  `k` the denominator is `k`.
 
 ## Project layout
 
 ```
 src/reco_eval_kit/
     metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate @K
-    beyond_accuracy.py   # coverage, novelty, intra-list diversity
+    beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
     baselines.py         # popularity, random, item-item co-occurrence

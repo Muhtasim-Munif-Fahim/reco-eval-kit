@@ -9,7 +9,14 @@ from .baselines import (
     PopularityRecommender,
     RandomRecommender,
 )
-from .beyond_accuracy import catalog_coverage, intra_list_diversity, novelty
+from .beyond_accuracy import (
+    catalog_coverage,
+    intra_list_diversity,
+    novelty,
+    profile_unexpectedness,
+    serendipity,
+    unexpectedness,
+)
 from .metrics import (
     average_precision_at_k,
     hit_rate_at_k,
@@ -61,6 +68,8 @@ def main(argv=None) -> int:
     relevant_by_user = test.groupby("user_id")["item_id"].agg(set).to_dict()
     popularity_counts = train["item_id"].value_counts().to_dict()
     item_features = generate_item_features(n_items=args.n_items, seed=args.seed + 1)
+    history_lists = [seen_by_user.get(user, set()) for user in test_users]
+    relevant_lists = [relevant_by_user[user] for user in test_users]
 
     models = {
         "popularity": PopularityRecommender(),
@@ -71,12 +80,10 @@ def main(argv=None) -> int:
     results = {}
     for name, model in models.items():
         model.fit(train)
-        rec_lists, relevant_lists = [], []
-        for user in test_users:
-            rec_lists.append(
-                model.recommend(user, k=args.k, exclude=seen_by_user.get(user, set()))
-            )
-            relevant_lists.append(relevant_by_user[user])
+        rec_lists = [
+            model.recommend(user, k=args.k, exclude=history)
+            for user, history in zip(test_users, history_lists)
+        ]
 
         scores = {
             label: mean_metric(metric, rec_lists, relevant_lists, k=args.k)
@@ -86,6 +93,20 @@ def main(argv=None) -> int:
         scores["CatalogCoverage"] = catalog_coverage(rec_lists, args.n_items)
         scores["NoveltyBits"] = novelty(rec_lists, popularity_counts)
         scores["IntraListDiversity"] = intra_list_diversity(rec_lists, item_features)
+        scores["Unexpectedness"] = unexpectedness(rec_lists, popularity_counts)
+        scores["ProfileUnexpectedness"] = profile_unexpectedness(
+            rec_lists, history_lists, item_features
+        )
+        scores["Serendipity"] = serendipity(
+            rec_lists, relevant_lists, item_popularity=popularity_counts, k=args.k
+        )
+        scores["ProfileSerendipity"] = serendipity(
+            rec_lists,
+            relevant_lists,
+            user_histories=history_lists,
+            item_features=item_features,
+            k=args.k,
+        )
         results[name] = scores
 
     summary = {
