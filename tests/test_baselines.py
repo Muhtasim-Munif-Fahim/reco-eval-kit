@@ -1,7 +1,9 @@
+import numpy as np
 import pandas as pd
 import pytest
 
 from reco_eval_kit.baselines import (
+    BPRRecommender,
     ItemItemCooccurrenceRecommender,
     PopularityRecommender,
     RandomRecommender,
@@ -87,3 +89,52 @@ def test_cooccurrence_fills_short_neighbor_scores_from_popularity():
 def test_fit_rejects_frames_missing_required_columns():
     with pytest.raises(KeyError):
         PopularityRecommender().fit(pd.DataFrame({"item_id": [1]}))
+
+
+def test_bpr_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError, match="fit must be called"):
+        BPRRecommender().recommend("u1", k=2)
+
+
+def test_bpr_same_seed_is_reproducible():
+    first = BPRRecommender(n_epochs=8, seed=11).fit(INTERACTIONS)
+    second = BPRRecommender(n_epochs=8, seed=11).fit(INTERACTIONS)
+    assert first.recommend("u1", k=3, exclude={10, 11}) == second.recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+
+
+def test_bpr_different_seed_differs():
+    first = BPRRecommender(n_epochs=8, seed=1).fit(INTERACTIONS)
+    second = BPRRecommender(n_epochs=8, seed=2).fit(INTERACTIONS)
+    assert not (
+        np.allclose(first.user_factors_, second.user_factors_)
+        and np.allclose(first.item_factors_, second.item_factors_)
+    )
+
+
+def test_bpr_never_returns_seen_items_and_respects_cutoff():
+    model = BPRRecommender(n_epochs=5, seed=3).fit(INTERACTIONS)
+    recs = model.recommend("u1", k=2, exclude={10, 11})
+    assert len(recs) == 2
+    assert set(recs).isdisjoint({10, 11})
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_bpr_unknown_user_falls_back_to_popularity():
+    model = BPRRecommender(n_epochs=5, seed=0).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_bpr_ranks_held_out_cluster_item_above_the_other_cluster():
+    pairs = []
+    for user in ("a1", "a2", "a3", "a4"):
+        for item in (1, 2, 3, 4):
+            pairs.append((user, item))
+    for user in ("b1", "b2", "b3", "b4"):
+        for item in (10, 11, 12, 13):
+            pairs.append((user, item))
+    pairs = [(user, item) for user, item in pairs if not (user == "a1" and item == 4)]
+    model = BPRRecommender(n_factors=8, n_epochs=40, seed=0).fit(make_frame(pairs))
+    recs = model.recommend("a1", k=4, exclude={1, 2, 3})
+    assert recs[0] == 4

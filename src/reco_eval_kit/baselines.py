@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from itertools import combinations
 from typing import Optional
@@ -111,3 +112,136 @@ class ItemItemCooccurrenceRecommender:
             remaining = self._fallback.recommend(user_id, k, exclude=blocked | set(recommendations))
             recommendations.extend(remaining[: k - len(recommendations)])
         return recommendations
+
+
+def _bpr_coefficient(score_diff: float) -> float:
+    """Return σ(-(x_ui - x_uj)) with overflow protection.
+
+    This is the BPR gradient weight for a sampled (user, positive, negative)
+    triple: large positive margins contribute almost nothing, large negative
+    margins contribute a weight of 1.
+    """
+    if score_diff > 35.0:
+        return 0.0
+    if score_diff < -35.0:
+        return 1.0
+    return 1.0 / (1.0 + math.exp(score_diff))
+
+
+class BPRRecommender:
+    """Bayesian Personalized Ranking matrix factorization for implicit feedback.
+
+    Learns user and item embeddings (plus item bias) by SGD on sampled
+    (user, observed item, unobserved item) triples so that observed items
+    rank above unobserved ones. The seed fixes initialization and the
+    sampling stream. Unknown users fall back to the popularity ranking so
+    every user still receives k items.
+    """
+
+    def __init__(
+        self,
+        n_factors: int = 16,
+        n_epochs: int = 30,
+        learning_rate: float = 0.05,
+        regularization: float = 0.01,
+        n_negatives: int = 1,
+        seed: int = 0,
+    ) -> None:
+        self.n_factors = int(n_factors)
+        self.n_epochs = int(n_epochs)
+        self.learning_rate = float(learning_rate)
+        self.regularization = float(regularization)
+        self.n_negatives = int(n_negatives)
+        self.seed = int(seed)
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.user_factors_: Optional[np.ndarray] = None
+        self.item_factors_: Optional[np.ndarray] = None
+        self.item_bias_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "BPRRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            self.user_factors_ = np.zeros((0, self.n_factors))
+            self.item_factors_ = np.zeros((0, self.n_factors))
+            self.item_bias_ = np.zeros(0)
+            return self
+
+        rng = np.random.default_rng(self.seed)
+        user_factors = rng.normal(0.0, 0.1, size=(n_users, self.n_factors))
+        item_factors = rng.normal(0.0, 0.1, size=(n_items, self.n_factors))
+        item_bias = np.zeros(n_items, dtype=float)
+
+        seen_mask = np.zeros((n_users, n_items), dtype=bool)
+        observed: list = []
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            u_idx = self._user_index[user]
+            i_idx = item_index[item]
+            if not seen_mask[u_idx, i_idx]:
+                seen_mask[u_idx, i_idx] = True
+                observed.append((u_idx, i_idx))
+        observed_pairs = np.array(observed, dtype=np.int64)
+        seen_counts = seen_mask.sum(axis=1)
+        lr = self.learning_rate
+        reg = self.regularization
+
+        for _ in range(self.n_epochs):
+            rng.shuffle(observed_pairs)
+            for u_idx, i_idx in observed_pairs:
+                u_idx = int(u_idx)
+                i_idx = int(i_idx)
+                if int(seen_counts[u_idx]) >= n_items:
+                    continue
+                for _neg in range(self.n_negatives):
+                    j_idx = int(rng.integers(0, n_items))
+                    while seen_mask[u_idx, j_idx]:
+                        j_idx = int(rng.integers(0, n_items))
+                    pu = user_factors[u_idx].copy()
+                    qi = item_factors[i_idx].copy()
+                    qj = item_factors[j_idx].copy()
+                    bi = item_bias[i_idx]
+                    bj = item_bias[j_idx]
+                    score_diff = float(np.dot(pu, qi - qj) + bi - bj)
+                    weight = _bpr_coefficient(score_diff)
+                    user_factors[u_idx] += lr * (weight * (qi - qj) - reg * pu)
+                    item_factors[i_idx] += lr * (weight * pu - reg * qi)
+                    item_factors[j_idx] += lr * (-weight * pu - reg * qj)
+                    item_bias[i_idx] += lr * (weight - reg * bi)
+                    item_bias[j_idx] += lr * (-weight - reg * bj)
+
+        self.user_factors_ = user_factors
+        self.item_factors_ = item_factors
+        self.item_bias_ = item_bias
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.user_factors_ is None or self.item_factors_ is None or self.item_bias_ is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = self.user_factors_[user_idx] @ self.item_factors_.T + self.item_bias_
+        ranked = sorted(
+            (
+                (item, score)
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]

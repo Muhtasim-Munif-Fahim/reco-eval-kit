@@ -36,3 +36,10 @@ def test_cli_report_includes_beyond_accuracy_metrics(tmp_path):
     text = output.read_text(encoding="utf-8")
     for metric in BEYOND_ACCURACY_METRICS:
         assert f"| {metric} |" in text
+    for model_heading in (
+        "## popularity",
+        "## random(seed=0)",
+        "## item-item-cooccurrence",
+        "## bpr(seed=0)",
+    ):
+        assert model_heading in text

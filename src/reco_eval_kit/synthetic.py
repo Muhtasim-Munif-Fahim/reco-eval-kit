@@ -22,7 +22,7 @@ def generate_interactions(
     Every user belongs to a taste cluster. An interaction's item is drawn
     either from the cluster-favored slice of a Zipf-style global popularity
     distribution or from the global distribution itself (probability
-    ``cluster_mix``), so both popularity and co-occurrence baselines find
+    ``cluster_mix``), so popularity, co-occurrence, and BPR baselines find
     real signal. Timestamps are stream positions, which makes last-item
     holdout splits well defined.
     """
