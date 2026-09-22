@@ -1,11 +1,15 @@
 """Ranking quality metrics for top-K recommendation lists.
 
-Each metric takes the ranked list of recommended item ids for one user and
-that user's relevant items. Relevance may be given either as a collection of
-item ids (binary relevance) or as a mapping ``item_id -> gain`` with
-non-negative graded gains. Recommended lists must not contain duplicates;
-metrics raise :class:`ValueError` on repeated items because double-counted
-positions silently inflate every score.
+Accuracy metrics take the ranked list of recommended item ids for one user
+and that user's relevant items. Relevance may be given either as a collection
+of item ids (binary relevance) or as a mapping ``item_id -> gain`` with
+non-negative graded gains. :func:`inverse_popularity_at_k` is the novelty
+ranking metric: it takes an item-popularity mapping instead of a relevance
+set and scores rank-discounted inverse popularity.
+
+Recommended lists must not contain duplicates; metrics raise
+:class:`ValueError` on repeated items because double-counted positions
+silently inflate every score.
 """
 
 from __future__ import annotations
@@ -140,6 +144,53 @@ def mrr(recommended: Sequence, relevant: RelevanceSpec) -> float:
     return 0.0
 
 
+def _validate_popularity(item_popularity: Mapping) -> None:
+    if not isinstance(item_popularity, Mapping):
+        raise TypeError("item_popularity must map item ids to interaction counts")
+    for count in item_popularity.values():
+        value = float(count)
+        if value < 0.0 or not math.isfinite(value):
+            raise ValueError("popularity counts must be finite and non-negative")
+
+
+def _inverse_popularity(item, item_popularity: Mapping) -> float:
+    """Add-one inverse popularity ``1 / (count + 1)`` in ``(0, 1]``.
+
+    Missing items and non-positive counts score 1.0, the value of an item
+    nobody has interacted with. A count of ``n`` scores ``1 / (n + 1)``.
+    """
+    count = float(item_popularity.get(item, 0.0))
+    if count <= 0.0:
+        return 1.0
+    return 1.0 / (count + 1.0)
+
+
+def inverse_popularity_at_k(
+    recommended: Sequence, item_popularity: Mapping, k: int
+) -> float:
+    """Rank-discounted inverse-popularity novelty at k.
+
+    Each item contributes ``1 / (count + 1)``, discounted by the same
+    logarithmic weight as NDCG, ``1 / log2(rank + 1)``. The score divides by
+    the sum of discounts through ``k``, so a shorter list is penalized and a
+    full list of unseen items scores 1.0. Placing a rarer item earlier raises
+    the score relative to the same items in the opposite order.
+
+    ``item_popularity`` maps item id to interaction count. This is separate
+    from :func:`reco_eval_kit.beyond_accuracy.novelty`, which averages
+    self-information and ignores rank.
+    """
+    _check_k(k)
+    items = _validate_recommended(recommended)
+    _validate_popularity(item_popularity)
+    numerator = sum(
+        _inverse_popularity(item, item_popularity) * _discount(rank)
+        for rank, item in enumerate(items[:k], start=1)
+    )
+    denominator = sum(_discount(rank) for rank in range(1, k + 1))
+    return numerator / denominator
+
+
 MetricCallable = Callable[..., float]
 
 
@@ -162,4 +213,23 @@ def mean_metric(
     ]
     if not values:
         return 0.0
+    return sum(values) / len(values)
+
+
+def mean_inverse_popularity_at_k(
+    recommended_lists: Sequence[Sequence],
+    item_popularity: Mapping,
+    k: int,
+) -> float:
+    """Average :func:`inverse_popularity_at_k` over users.
+
+    Popularity describes the catalog and is shared across users, so this
+    helper does not go through :func:`mean_metric`. An empty evaluation set
+    averages to 0.0.
+    """
+    if len(recommended_lists) == 0:
+        return 0.0
+    values = [
+        inverse_popularity_at_k(items, item_popularity, k) for items in recommended_lists
+    ]
     return sum(values) / len(values)

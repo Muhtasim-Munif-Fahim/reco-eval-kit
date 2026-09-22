@@ -37,6 +37,8 @@ def novelty(recommended_lists, item_popularity, floor: float = 1e-6) -> float:
     are counts normalized over the observed total. Items absent from the
     mapping receive the floor probability, i.e. maximal novelty, so
     long-tail catalog items stay in the average instead of being skipped.
+    Rank is ignored. For position-weighted inverse popularity see
+    :func:`reco_eval_kit.metrics.inverse_popularity_at_k`.
     """
     total = float(sum(item_popularity.values()))
     values = []
