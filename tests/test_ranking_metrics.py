@@ -5,6 +5,8 @@ import pytest
 from reco_eval_kit.metrics import (
     average_precision_at_k,
     hit_rate_at_k,
+    inverse_popularity_at_k,
+    mean_inverse_popularity_at_k,
     mean_metric,
     mrr,
     ndcg_at_k,
@@ -107,3 +109,55 @@ def test_recall_counts_graded_items_with_positive_gain():
     rel = {1: 0.0, 2: 2.0}
     assert recall_at_k([1], rel, k=1) == pytest.approx(0.0)
     assert recall_at_k([2], rel, k=1) == pytest.approx(1.0)
+
+
+def test_inverse_popularity_rewards_rare_items_at_higher_ranks():
+    popularity = {1: 0, 2: 3}
+    rare_first = inverse_popularity_at_k([1, 2], popularity, k=2)
+    popular_first = inverse_popularity_at_k([2, 1], popularity, k=2)
+    disc1 = 1.0
+    disc2 = 1.0 / math.log2(3)
+    denom = disc1 + disc2
+    assert rare_first == pytest.approx((1.0 * disc1 + 0.25 * disc2) / denom)
+    assert popular_first == pytest.approx((0.25 * disc1 + 1.0 * disc2) / denom)
+    assert rare_first > popular_first
+
+
+def test_inverse_popularity_of_uniform_full_list_is_reciprocal_count():
+    popularity = {1: 4, 2: 4, 3: 4}
+    assert inverse_popularity_at_k([1, 2, 3], popularity, k=3) == pytest.approx(1 / 5)
+
+
+def test_unseen_items_have_maximal_inverse_popularity():
+    assert inverse_popularity_at_k([99], {1: 10}, k=1) == pytest.approx(1.0)
+    assert inverse_popularity_at_k([1], {1: 0}, k=1) == pytest.approx(1.0)
+    assert inverse_popularity_at_k([1], {1: 99}, k=1) == pytest.approx(0.01)
+
+
+def test_inverse_popularity_penalizes_lists_shorter_than_k():
+    score = inverse_popularity_at_k([7], {}, k=2)
+    denom = 1.0 + 1.0 / math.log2(3)
+    assert score == pytest.approx(1.0 / denom)
+
+
+def test_inverse_popularity_rejects_bad_inputs():
+    with pytest.raises(ValueError):
+        inverse_popularity_at_k([1, 1], {1: 1}, k=2)
+    with pytest.raises(ValueError):
+        inverse_popularity_at_k([1], {1: 1}, k=0)
+    with pytest.raises(ValueError):
+        inverse_popularity_at_k([1], {1: -1}, k=1)
+    with pytest.raises(ValueError):
+        inverse_popularity_at_k([1], {1: math.nan}, k=1)
+    with pytest.raises(TypeError):
+        inverse_popularity_at_k([1], [1], k=1)
+
+
+def test_mean_inverse_popularity_averages_users():
+    popularity = {1: 1}
+    lists = [[1], [9]]
+    assert mean_inverse_popularity_at_k(lists, popularity, k=1) == pytest.approx(0.75)
+
+
+def test_mean_inverse_popularity_empty_evaluation_is_zero():
+    assert mean_inverse_popularity_at_k([], {1: 1}, k=1) == 0.0

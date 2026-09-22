@@ -8,10 +8,13 @@ and a small CLI that ties the whole loop together and writes a markdown report.
 
 ## Features
 
-- **Ranking metrics** — Precision@K, Recall@K, MAP@K, NDCG@K, MRR, HitRate@K.
-  Binary or graded relevance per user; NDCG normalizes against an ideal DCG
-  built from *all* relevant items (so short lists and missed hits are handled
-  correctly); MAP@K caps its normalizer at K; duplicate recommendations raise.
+- **Ranking metrics** — Precision@K, Recall@K, MAP@K, NDCG@K, MRR, HitRate@K,
+  and InversePopularity@K. Binary or graded relevance per user; NDCG
+  normalizes against an ideal DCG built from *all* relevant items (so short
+  lists and missed hits are handled correctly); MAP@K caps its normalizer at
+  K; duplicate recommendations raise. InversePopularity@K is rank-aware
+  novelty: each top-K item contributes `1 / (count + 1)`, discounted by
+  `1 / log2(rank + 1)` and normalized by the sum of those discounts through K.
 - **Beyond accuracy** — catalog coverage, novelty as mean self-information
   `-log2(p(item))` with a probability floor for unseen items, intra-list
   diversity as mean pairwise cosine distance over item feature vectors,
@@ -25,6 +28,15 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   BPR matrix-factorization model (seeded SGD on implicit pairwise triples,
   popularity fallback for unknown users).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
+
+Catalog coverage and intra-list diversity are already part of the toolkit
+(`catalog_coverage`, `intra_list_diversity`), with tests in
+`tests/test_beyond_accuracy.py`. This change therefore does not add a second
+copy of those measures. It adds InversePopularity@K instead: a ranking metric
+for novelty as inverse popularity. It is distinct from `novelty`, which
+averages self-information and ignores position. A rarer item placed earlier
+scores higher than the same item placed later, and a list shorter than K is
+penalized because the discount normalizer always runs through K.
 
 ## Installation
 
@@ -44,7 +56,9 @@ pip install -e .
 
 ```python
 import pandas as pd
-from reco_eval_kit.metrics import precision_at_k, ndcg_at_k, mrr
+from reco_eval_kit.metrics import (
+    precision_at_k, ndcg_at_k, mrr, inverse_popularity_at_k,
+)
 from reco_eval_kit.baselines import BPRRecommender, PopularityRecommender
 from reco_eval_kit.splitting import leave_one_out
 
@@ -61,6 +75,8 @@ print(recs)                                   # e.g. [12, 13]
 print(precision_at_k(recs, relevant={12}, k=2))  # 0.5
 print(ndcg_at_k(recs, relevant={12}, k=2))
 print(mrr(recs, relevant={13}))
+popularity = train["item_id"].value_counts().to_dict()
+print(inverse_popularity_at_k(recs, popularity, k=2))
 
 bpr = BPRRecommender(seed=0).fit(train)
 print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
@@ -135,6 +151,9 @@ writes `examples/output/demo_report.md`.
 - NDCG@K discounts gains by `1/log2(rank + 1)`; the ideal side sorts every
   relevant item's gain descending before truncating at `k`.
 - MRR is the reciprocal rank of the first relevant hit; `0.0` without one.
+- InversePopularity@K uses `1 / (count + 1)` per item (unseen or zero-count
+  items score `1.0`), weights positions by `1 / log2(rank + 1)`, and divides
+  by the sum of those weights through `k`.
 - Unexpectedness is the mean of `1 - p(item)` over recommended entries.
 - Profile unexpectedness is mean cosine distance from each user's primitive
   profile (the mean history vector), clipped to `[0, 1]`.
@@ -145,7 +164,7 @@ writes `examples/output/demo_report.md`.
 
 ```
 src/reco_eval_kit/
-    metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate @K
+    metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate/InversePopularity @K
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features

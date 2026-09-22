@@ -21,6 +21,7 @@ from .beyond_accuracy import (
 from .metrics import (
     average_precision_at_k,
     hit_rate_at_k,
+    mean_inverse_popularity_at_k,
     mean_metric,
     mrr,
     ndcg_at_k,
@@ -92,6 +93,9 @@ def main(argv=None) -> int:
             for label, metric in CUTOFF_METRICS
         }
         scores["MRR"] = mean_metric(mrr, rec_lists, relevant_lists)
+        scores["InversePopularity@K"] = mean_inverse_popularity_at_k(
+            rec_lists, popularity_counts, args.k
+        )
         scores["CatalogCoverage"] = catalog_coverage(rec_lists, args.n_items)
         scores["NoveltyBits"] = novelty(rec_lists, popularity_counts)
         scores["IntraListDiversity"] = intra_list_diversity(rec_lists, item_features)
