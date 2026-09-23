@@ -7,6 +7,7 @@ import argparse
 from .baselines import (
     BPRRecommender,
     ItemItemCooccurrenceRecommender,
+    ItemKNNRecommender,
     PopularityRecommender,
     RandomRecommender,
 )
@@ -77,6 +78,7 @@ def main(argv=None) -> int:
         "popularity": PopularityRecommender(),
         f"random(seed={args.seed})": RandomRecommender(seed=args.seed),
         "item-item-cooccurrence": ItemItemCooccurrenceRecommender(),
+        "item-knn(cosine)": ItemKNNRecommender(similarity="cosine"),
         f"bpr(seed={args.seed})": BPRRecommender(seed=args.seed),
     }
 
