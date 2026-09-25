@@ -206,6 +206,98 @@ class ItemKNNRecommender:
         return recommendations
 
 
+class UserKNNRecommender:
+    """User-user k-nearest-neighbor collaborative filtering for implicit feedback.
+
+    Builds a binary user-item matrix (repeated interactions collapse to one)
+    and scores a candidate by the sum of similarities to neighbors who
+    interacted with it. Similarity is cosine or Jaccard over those binary
+    user rows. Only the ``n_neighbors`` strongest neighbors are kept per
+    user; ties break by ascending user id. Unknown users or exhausted
+    neighbor scores fall back to the popularity ranking so every user still
+    receives k items. Seen items are always excluded.
+    """
+
+    def __init__(self, similarity: str = "cosine", n_neighbors: int = 20) -> None:
+        if similarity not in ("cosine", "jaccard"):
+            raise ValueError("similarity must be 'cosine' or 'jaccard'")
+        n_neighbors = int(n_neighbors)
+        if n_neighbors < 1:
+            raise ValueError("n_neighbors must be at least 1")
+        self.similarity = similarity
+        self.n_neighbors = n_neighbors
+        self.neighbors_: Optional[dict] = None
+        self.histories_: dict = {}
+        self.catalog_: list = []
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "UserKNNRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self.neighbors_ = {}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            return self
+
+        user_index = {user: idx for idx, user in enumerate(users)}
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        matrix = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            matrix[user_index[user], item_index[item]] = 1.0
+
+        gram = matrix @ matrix.T
+        degrees = np.diag(gram).copy()
+        if self.similarity == "cosine":
+            norms = np.sqrt(degrees)
+            denom = norms[:, None] * norms[None, :]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                similarity = np.divide(gram, denom, out=np.zeros_like(gram), where=denom > 0)
+        else:
+            union = degrees[:, None] + degrees[None, :] - gram
+            with np.errstate(divide="ignore", invalid="ignore"):
+                similarity = np.divide(gram, union, out=np.zeros_like(gram), where=union > 0)
+        np.fill_diagonal(similarity, 0.0)
+
+        neighbors: dict = {}
+        for idx, user in enumerate(users):
+            positive = np.flatnonzero(similarity[idx] > 0)
+            ranked = sorted(
+                ((users[int(col)], float(similarity[idx, col])) for col in positive),
+                key=lambda kv: (-kv[1], kv[0]),
+            )[: self.n_neighbors]
+            if ranked:
+                neighbors[user] = dict(ranked)
+        self.neighbors_ = neighbors
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.neighbors_ is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude)
+        seen = self.histories_.get(user_id, set())
+        blocked = banned | seen
+        scores: defaultdict = defaultdict(float)
+        for neighbor, weight in self.neighbors_.get(user_id, {}).items():
+            for candidate in self.histories_.get(neighbor, ()):
+                if candidate not in blocked:
+                    scores[candidate] += weight
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+        recommendations = [item for item, _ in ranked][:k]
+        if len(recommendations) < k:
+            remaining = self._fallback.recommend(
+                user_id, k, exclude=blocked | set(recommendations)
+            )
+            recommendations.extend(remaining[: k - len(recommendations)])
+        return recommendations
+
+
 def _bpr_coefficient(score_diff: float) -> float:
     """Return σ(-(x_ui - x_uj)) with overflow protection.
 

@@ -8,7 +8,9 @@ from reco_eval_kit.baselines import (
     ItemKNNRecommender,
     PopularityRecommender,
     RandomRecommender,
+    UserKNNRecommender,
 )
+from reco_eval_kit.metrics import ndcg_at_k, precision_at_k, recall_at_k
 
 
 def make_frame(pairs):
@@ -194,6 +196,128 @@ def test_item_knn_ranks_held_out_cluster_item_above_the_other_cluster(similarity
     recs = model.recommend("a1", k=4, exclude={1, 2, 3})
     assert recs[0] == 4
     assert set(recs).isdisjoint({1, 2, 3})
+
+
+def test_user_knn_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError, match="fit must be called"):
+        UserKNNRecommender().recommend("u1", k=2)
+
+
+def test_user_knn_rejects_unknown_similarity_and_empty_neighborhood():
+    with pytest.raises(ValueError, match="similarity"):
+        UserKNNRecommender(similarity="pearson")
+    with pytest.raises(ValueError, match="n_neighbors"):
+        UserKNNRecommender(n_neighbors=0)
+
+
+def test_user_knn_cosine_and_jaccard_values_and_disagreement():
+    cosine = UserKNNRecommender(similarity="cosine").fit(INTERACTIONS)
+    jaccard = UserKNNRecommender(similarity="jaccard").fit(INTERACTIONS)
+    # u1 and u2 share both items; u1 and u3 share one of two.
+    assert cosine.neighbors_["u1"]["u2"] == pytest.approx(1.0)
+    assert cosine.neighbors_["u1"]["u3"] == pytest.approx(0.5)
+    assert jaccard.neighbors_["u1"]["u3"] == pytest.approx(1 / 3)
+    assert cosine.neighbors_["u2"]["u1"] == pytest.approx(cosine.neighbors_["u1"]["u2"])
+    assert "u4" not in cosine.neighbors_
+
+    # |t|=30, |x|=5 with 2 shared, |y|=25 with 4 shared.
+    # Cosine ranks neighbor x first, so item 1 wins; Jaccard ranks y, so item 2 wins.
+    pairs = [("t", item) for item in range(1000, 1030)]
+    pairs += [("x", 1000), ("x", 1001), ("x", 1), ("x", 101), ("x", 102)]
+    pairs += [("y", item) for item in range(1000, 1004)]
+    pairs += [("y", 2)]
+    pairs += [("y", item) for item in range(201, 221)]
+    frame = make_frame(pairs)
+    assert UserKNNRecommender(similarity="cosine").fit(frame).recommend("t", k=1) == [1]
+    assert UserKNNRecommender(similarity="jaccard").fit(frame).recommend("t", k=1) == [2]
+
+
+def test_user_knn_deduplicates_repeated_interactions():
+    once = make_frame([("u1", 1), ("u1", 2), ("u2", 1), ("u2", 3)])
+    twice = make_frame(
+        [("u1", 1), ("u1", 1), ("u1", 2), ("u2", 1), ("u2", 3), ("u2", 3)]
+    )
+    first = UserKNNRecommender(similarity="cosine").fit(once)
+    second = UserKNNRecommender(similarity="cosine").fit(twice)
+    assert first.neighbors_["u1"]["u2"] == pytest.approx(second.neighbors_["u1"]["u2"])
+    assert first.neighbors_["u1"]["u2"] == pytest.approx(0.5)
+
+
+def test_user_knn_keeps_only_nearest_neighbors_and_breaks_ties_by_user_id():
+    capped = UserKNNRecommender(similarity="cosine", n_neighbors=1).fit(INTERACTIONS)
+    assert list(capped.neighbors_["u1"]) == ["u2"]
+
+    # q overlaps equally with a and b. The smaller user id is the only neighbor kept.
+    tied_neighbors = make_frame(
+        [
+            ("q", 0),
+            ("q", 5),
+            ("a", 0),
+            ("a", 1),
+            ("b", 5),
+            ("b", 2),
+        ]
+    )
+    model = UserKNNRecommender(similarity="cosine", n_neighbors=1).fit(tied_neighbors)
+    assert list(model.neighbors_["q"]) == ["a"]
+    assert model.recommend("q", k=1) == [1]
+
+    # Three medium neighbors who like 20 outvote one closer neighbor who likes 10,
+    # unless the neighborhood is truncated to that closer neighbor.
+    pairs = [("q", 1), ("q", 2), ("q", 3)]
+    pairs += [("high", 1), ("high", 2), ("high", 3), ("high", 10)]
+    pairs += [("a", 1), ("a", 20), ("b", 2), ("b", 20), ("c", 3), ("c", 20)]
+    for idx in range(6):
+        pairs.append((f"p{idx}", 9))
+    frame = make_frame(pairs)
+    assert UserKNNRecommender(n_neighbors=1).fit(frame).recommend("q", k=1) == [10]
+    assert UserKNNRecommender(n_neighbors=10).fit(frame).recommend("q", k=1) == [20]
+
+
+def test_user_knn_breaks_score_ties_by_ascending_item_id():
+    tied = make_frame(
+        [
+            ("q", 0),
+            ("a", 0),
+            ("a", 1),
+            ("b", 0),
+            ("b", 2),
+            ("p1", 2),
+            ("p2", 2),
+            ("p3", 2),
+        ]
+    )
+    ranked = UserKNNRecommender(similarity="cosine").fit(tied)
+    # Item 2 is more popular, but the neighbor scores tie, so item id wins.
+    assert ranked.recommend("q", k=2) == [1, 2]
+
+
+def test_user_knn_excludes_seen_items_and_unknown_user_falls_back_to_popularity():
+    model = UserKNNRecommender().fit(INTERACTIONS)
+    assert model.recommend("u3", k=2) == [11, 14]
+    assert model.recommend("u3", k=2, exclude={11}) == [14]
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+@pytest.mark.parametrize("similarity", ["cosine", "jaccard"])
+def test_user_knn_ranks_held_out_cluster_item_and_scores_with_ranking_metrics(similarity):
+    pairs = []
+    for user in ("a1", "a2", "a3", "a4"):
+        for item in (1, 2, 3, 4):
+            pairs.append((user, item))
+    for user in ("b1", "b2", "b3", "b4"):
+        for item in (10, 11, 12, 13):
+            pairs.append((user, item))
+    pairs = [(user, item) for user, item in pairs if not (user == "a1" and item == 4)]
+    model = UserKNNRecommender(similarity=similarity, n_neighbors=20).fit(make_frame(pairs))
+    recs = model.recommend("a1", k=4, exclude={1, 2, 3})
+    assert recs == [4, 10, 11, 12]
+    assert set(recs).isdisjoint({1, 2, 3})
+    assert precision_at_k(recs, relevant={4}, k=1) == pytest.approx(1.0)
+    assert precision_at_k(recs, relevant={4}, k=4) == pytest.approx(0.25)
+    assert recall_at_k(recs, relevant={4}, k=4) == pytest.approx(1.0)
+    assert ndcg_at_k(recs, relevant={4}, k=4) == pytest.approx(1.0)
 
 
 def test_bpr_recommend_before_fit_raises():

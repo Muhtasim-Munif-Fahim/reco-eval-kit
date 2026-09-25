@@ -42,6 +42,7 @@ def test_cli_report_includes_beyond_accuracy_metrics(tmp_path):
         "## random(seed=0)",
         "## item-item-cooccurrence",
         "## item-knn(cosine)",
+        "## user-knn(cosine)",
         "## bpr(seed=0)",
     ):
         assert model_heading in text
