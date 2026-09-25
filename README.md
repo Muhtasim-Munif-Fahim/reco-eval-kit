@@ -3,7 +3,7 @@
 Ranking and beyond-accuracy evaluation toolkit for implicit-feedback
 recommender systems. It ships the standard top-K metrics, catalog-level and
 list-level quality measures, leave-one-out / leave-last-N protocols, a seeded
-synthetic interaction generator, five baseline recommenders to score against,
+synthetic interaction generator, six baseline recommenders to score against,
 and a small CLI that ties the whole loop together and writes a markdown report.
 
 ## Features
@@ -26,9 +26,10 @@ and a small CLI that ties the whole loop together and writes a markdown report.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
   item-item co-occurrence counts with popularity fallback, ItemKNN
   (cosine or Jaccard item-item similarity, top-`n_neighbors` truncation,
-  popularity fallback), and a lightweight BPR matrix-factorization model
-  (seeded SGD on implicit pairwise triples, popularity fallback for unknown
-  users).
+  popularity fallback), UserKNN (cosine or Jaccard user-user similarity on
+  the binary interaction matrix, top-`n_neighbors` truncation, popularity
+  fallback), and a lightweight BPR matrix-factorization model (seeded SGD
+  on implicit pairwise triples, popularity fallback for unknown users).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
 Catalog coverage and intra-list diversity are already part of the toolkit
@@ -63,6 +64,7 @@ from reco_eval_kit.metrics import (
 )
 from reco_eval_kit.baselines import (
     BPRRecommender, ItemKNNRecommender, PopularityRecommender,
+    UserKNNRecommender,
 )
 from reco_eval_kit.splitting import leave_one_out
 
@@ -88,6 +90,10 @@ print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 knn = ItemKNNRecommender(similarity="cosine", n_neighbors=20).fit(train)
 print(knn.recommend(user_id=1, k=2, exclude={10, 11}))
 # ItemKNNRecommender(similarity="jaccard") uses set-overlap weights instead.
+
+user_knn = UserKNNRecommender(similarity="cosine", n_neighbors=20).fit(train)
+print(user_knn.recommend(user_id=1, k=2, exclude={10, 11}))
+# UserKNNRecommender(similarity="jaccard") weights neighbors by set overlap.
 ```
 
 ### Generate synthetic data with learnable structure
@@ -103,7 +109,7 @@ features = generate_item_features(n_items=300, seed=43)
 
 Users belong to latent taste clusters; item draws mix cluster-favored slices
 with a Zipf-style global popularity distribution, so popularity,
-co-occurrence, ItemKNN, and BPR baselines all find real signal.
+co-occurrence, ItemKNN, UserKNN, and BPR baselines all find real signal.
 
 ### Beyond-accuracy measures
 
@@ -139,7 +145,7 @@ or after `pip install -e .`:
 reco-eval-kit --seed 7 --k 10
 ```
 
-The CLI generates data, splits leave-one-out, fits all five baselines,
+The CLI generates data, splits leave-one-out, fits all six baselines,
 averages every metric across test users, computes beyond-accuracy measures,
 and writes a markdown report that includes each listed model.
 
@@ -174,6 +180,13 @@ writes `examples/output/demo_report.md`.
   neighbor ties break by ascending item id. Seen items are dropped, and any
   shortfall is filled from the popularity ranking. The CLI reports this model
   as `item-knn(cosine)`.
+- UserKNN binarizes interactions, then scores each unseen item by the sum of
+  cosine (`|I_u ∩ I_v| / sqrt(|I_u| |I_v|)`) or Jaccard
+  (`|I_u ∩ I_v| / |I_u ∪ I_v|`) similarities to neighbors who interacted with
+  it. Each user keeps their `n_neighbors` strongest neighbors (default 20).
+  Neighbor ties break by ascending user id; score ties break by ascending
+  item id. Seen items are dropped, and any shortfall is filled from the
+  popularity ranking. The CLI reports this model as `user-knn(cosine)`.
 
 ## Project layout
 
@@ -183,7 +196,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, BPR-MF
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite

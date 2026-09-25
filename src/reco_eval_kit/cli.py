@@ -10,6 +10,7 @@ from .baselines import (
     ItemKNNRecommender,
     PopularityRecommender,
     RandomRecommender,
+    UserKNNRecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -79,6 +80,7 @@ def main(argv=None) -> int:
         f"random(seed={args.seed})": RandomRecommender(seed=args.seed),
         "item-item-cooccurrence": ItemItemCooccurrenceRecommender(),
         "item-knn(cosine)": ItemKNNRecommender(similarity="cosine"),
+        "user-knn(cosine)": UserKNNRecommender(similarity="cosine"),
         f"bpr(seed={args.seed})": BPRRecommender(seed=args.seed),
     }
 
