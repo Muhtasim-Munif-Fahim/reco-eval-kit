@@ -44,5 +44,6 @@ def test_cli_report_includes_beyond_accuracy_metrics(tmp_path):
         "## item-knn(cosine)",
         "## user-knn(cosine)",
         "## bpr(seed=0)",
+        "## puresvd",
     ):
         assert model_heading in text

@@ -429,3 +429,87 @@ class BPRRecommender:
             key=lambda kv: (-kv[1], kv[0]),
         )
         return [item for item, _ in ranked][:k]
+
+
+class PureSVDRecommender:
+    """Truncated SVD matrix factorization for implicit feedback (PureSVD).
+
+    Builds a binary user-item matrix (repeated interactions collapse to
+    one) and factors it with a compact SVD ``R ≈ U Σ Vᵀ``. Users are
+    scored by reconstructing ``u Σ Vᵀ`` against every item. Unlike BPR,
+    there is no sampling loop: the ranking is the truncated reconstruction
+    of the observed matrix (Cremonesi, Koren & Turrin, 2010). Unknown
+    users fall back to the popularity ranking so every user still receives
+    k items. Score ties break by ascending item id.
+    """
+
+    def __init__(self, n_factors: int = 16) -> None:
+        n_factors = int(n_factors)
+        if n_factors < 1:
+            raise ValueError("n_factors must be at least 1")
+        self.n_factors = n_factors
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.user_factors_: Optional[np.ndarray] = None
+        self.item_factors_: Optional[np.ndarray] = None
+        self.singular_values_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "PureSVDRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            self.user_factors_ = np.zeros((0, 0))
+            self.item_factors_ = np.zeros((0, 0))
+            self.singular_values_ = np.zeros(0)
+            return self
+
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        matrix = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            matrix[self._user_index[user], item_index[item]] = 1.0
+
+        rank = min(self.n_factors, n_users, n_items)
+        # Compact SVD; full_matrices=False keeps U (n_users, r) and Vt (r, n_items).
+        u, s, vt = np.linalg.svd(matrix, full_matrices=False)
+        u = u[:, :rank]
+        s = s[:rank]
+        vt = vt[:rank]
+        self.user_factors_ = u
+        self.item_factors_ = vt.T
+        self.singular_values_ = s
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if (
+            self.user_factors_ is None
+            or self.item_factors_ is None
+            or self.singular_values_ is None
+        ):
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        # Reconstruct row: (u_i * Σ) @ Vᵀ
+        scores = (self.user_factors_[user_idx] * self.singular_values_) @ self.item_factors_.T
+        ranked = sorted(
+            (
+                (item, score)
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]
+

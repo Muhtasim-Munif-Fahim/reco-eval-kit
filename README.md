@@ -145,7 +145,7 @@ or after `pip install -e .`:
 reco-eval-kit --seed 7 --k 10
 ```
 
-The CLI generates data, splits leave-one-out, fits all six baselines,
+The CLI generates data, splits leave-one-out, fits all seven baselines,
 averages every metric across test users, computes beyond-accuracy measures,
 and writes a markdown report that includes each listed model.
 
@@ -196,7 +196,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite
