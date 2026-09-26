@@ -11,6 +11,7 @@ from .baselines import (
     PopularityRecommender,
     RandomRecommender,
     UserKNNRecommender,
+    PureSVDRecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -82,6 +83,7 @@ def main(argv=None) -> int:
         "item-knn(cosine)": ItemKNNRecommender(similarity="cosine"),
         "user-knn(cosine)": UserKNNRecommender(similarity="cosine"),
         f"bpr(seed={args.seed})": BPRRecommender(seed=args.seed),
+        "puresvd": PureSVDRecommender(n_factors=16),
     }
 
     results = {}

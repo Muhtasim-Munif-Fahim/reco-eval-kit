@@ -4,6 +4,7 @@ import pytest
 
 from reco_eval_kit.baselines import (
     BPRRecommender,
+    PureSVDRecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -367,3 +368,40 @@ def test_bpr_ranks_held_out_cluster_item_above_the_other_cluster():
     model = BPRRecommender(n_factors=8, n_epochs=40, seed=0).fit(make_frame(pairs))
     recs = model.recommend("a1", k=4, exclude={1, 2, 3})
     assert recs[0] == 4
+
+def test_puresvd_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        PureSVDRecommender().recommend("u1", k=2)
+
+
+def test_puresvd_deterministic_and_excludes_seen():
+    model = PureSVDRecommender(n_factors=8).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = PureSVDRecommender(n_factors=8).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_puresvd_unknown_user_falls_back_to_popularity():
+    model = PureSVDRecommender(n_factors=4).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_puresvd_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3),
+        ("a2", 1), ("a2", 2), ("a2", 3),
+        ("a3", 1), ("a3", 2),
+        ("b1", 10), ("b1", 11), ("b1", 12),
+        ("b2", 10), ("b2", 11),
+    ]
+    model = PureSVDRecommender(n_factors=2).fit(make_frame(pairs))
+    recs = model.recommend("a3", k=1, exclude={1, 2})
+    assert recs[0] == 3
+
+
+def test_puresvd_invalid_factors_raises():
+    with pytest.raises(ValueError):
+        PureSVDRecommender(n_factors=0)
