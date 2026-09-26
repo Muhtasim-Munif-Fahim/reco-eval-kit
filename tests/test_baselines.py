@@ -5,6 +5,7 @@ import pytest
 from reco_eval_kit.baselines import (
     BPRRecommender,
     PureSVDRecommender,
+    WRMFRecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -405,3 +406,45 @@ def test_puresvd_recovers_held_out_affinity():
 def test_puresvd_invalid_factors_raises():
     with pytest.raises(ValueError):
         PureSVDRecommender(n_factors=0)
+
+
+def test_wrmf_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        WRMFRecommender().recommend("u1", k=2)
+
+
+def test_wrmf_deterministic_and_excludes_seen():
+    model = WRMFRecommender(n_factors=8, n_epochs=5, seed=0).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = WRMFRecommender(n_factors=8, n_epochs=5, seed=0).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_wrmf_unknown_user_falls_back_to_popularity():
+    model = WRMFRecommender(n_factors=4, n_epochs=3, seed=0).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_wrmf_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3),
+        ("a2", 1), ("a2", 2), ("a2", 3),
+        ("a3", 1), ("a3", 2),
+        ("b1", 10), ("b1", 11), ("b1", 12),
+        ("b2", 10), ("b2", 11),
+    ]
+    model = WRMFRecommender(n_factors=2, n_epochs=15, alpha=40.0, seed=0).fit(make_frame(pairs))
+    recs = model.recommend("a3", k=1, exclude={1, 2})
+    assert recs[0] == 3
+
+
+def test_wrmf_invalid_params_raise():
+    with pytest.raises(ValueError):
+        WRMFRecommender(n_factors=0)
+    with pytest.raises(ValueError):
+        WRMFRecommender(n_epochs=0)
+    with pytest.raises(ValueError):
+        WRMFRecommender(alpha=-1.0)
