@@ -513,3 +513,117 @@ class PureSVDRecommender:
         )
         return [item for item, _ in ranked][:k]
 
+
+class WRMFRecommender:
+    """Weighted Regularized Matrix Factorization for implicit feedback (WRMF / ALS).
+
+    Follows Hu, Koren & Volinsky (2008). Observations become binary preferences
+    ``p_ui ∈ {0, 1}`` with confidence ``c_ui = 1 + alpha * r_ui`` (``r_ui`` is
+    the interaction count). User and item factors alternate closed-form ridge
+    solves until ``n_epochs`` passes complete. Unknown users fall back to the
+    popularity ranking. Score ties break by ascending item id.
+    """
+
+    def __init__(
+        self,
+        n_factors: int = 16,
+        n_epochs: int = 10,
+        alpha: float = 40.0,
+        regularization: float = 0.1,
+        seed: int = 0,
+    ) -> None:
+        n_factors = int(n_factors)
+        n_epochs = int(n_epochs)
+        if n_factors < 1:
+            raise ValueError("n_factors must be at least 1")
+        if n_epochs < 1:
+            raise ValueError("n_epochs must be at least 1")
+        if float(alpha) < 0.0:
+            raise ValueError("alpha must be non-negative")
+        if float(regularization) < 0.0:
+            raise ValueError("regularization must be non-negative")
+        self.n_factors = n_factors
+        self.n_epochs = n_epochs
+        self.alpha = float(alpha)
+        self.regularization = float(regularization)
+        self.seed = int(seed)
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.user_factors_: Optional[np.ndarray] = None
+        self.item_factors_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "WRMFRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].copy()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        # Binary histories for exclusion; counts feed confidence.
+        dedup = pairs.drop_duplicates()
+        self.histories_ = {
+            user: set(items) for user, items in dedup.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            self.user_factors_ = np.zeros((0, self.n_factors))
+            self.item_factors_ = np.zeros((0, self.n_factors))
+            return self
+
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        counts = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            counts[self._user_index[user], item_index[item]] += 1.0
+        preference = (counts > 0.0).astype(np.float64)
+        confidence = 1.0 + self.alpha * counts
+
+        rng = np.random.default_rng(self.seed)
+        X = rng.normal(0.0, 0.1, size=(n_users, self.n_factors))
+        Y = rng.normal(0.0, 0.1, size=(n_items, self.n_factors))
+        eye = np.eye(self.n_factors)
+        reg = self.regularization
+
+        for _ in range(self.n_epochs):
+            YtY = Y.T @ Y
+            for u in range(n_users):
+                c_u = confidence[u]
+                p_u = preference[u]
+                # Cu is diagonal; use the Cu - I trick: Yt Y + Yt (Cu-I) Y + λI
+                Cu_minus_I = c_u - 1.0
+                A = YtY + (Y.T * Cu_minus_I) @ Y + reg * eye
+                b = (Y.T * (c_u * p_u)) @ np.ones(n_items)
+                X[u] = np.linalg.solve(A, b)
+            XtX = X.T @ X
+            for i in range(n_items):
+                c_i = confidence[:, i]
+                p_i = preference[:, i]
+                Cu_minus_I = c_i - 1.0
+                A = XtX + (X.T * Cu_minus_I) @ X + reg * eye
+                b = (X.T * (c_i * p_i)) @ np.ones(n_users)
+                Y[i] = np.linalg.solve(A, b)
+
+        self.user_factors_ = X
+        self.item_factors_ = Y
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.user_factors_ is None or self.item_factors_ is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = self.user_factors_[user_idx] @ self.item_factors_.T
+        ranked = sorted(
+            (
+                (item, score)
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]
+

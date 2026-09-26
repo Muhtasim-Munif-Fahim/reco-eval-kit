@@ -28,8 +28,11 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   (cosine or Jaccard item-item similarity, top-`n_neighbors` truncation,
   popularity fallback), UserKNN (cosine or Jaccard user-user similarity on
   the binary interaction matrix, top-`n_neighbors` truncation, popularity
-  fallback), and a lightweight BPR matrix-factorization model (seeded SGD
-  on implicit pairwise triples, popularity fallback for unknown users).
+  fallback), a lightweight BPR matrix-factorization model (seeded SGD
+  on implicit pairwise triples, popularity fallback for unknown users),
+  PureSVD (truncated SVD of the binary user–item matrix), and WRMF /
+  weighted ALS for implicit feedback (Hu, Koren & Volinsky; confidence
+  `c_ui = 1 + alpha * r_ui`).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
 Catalog coverage and intra-list diversity are already part of the toolkit
@@ -64,6 +67,7 @@ from reco_eval_kit.metrics import (
 )
 from reco_eval_kit.baselines import (
     BPRRecommender, ItemKNNRecommender, PopularityRecommender,
+    PureSVDRecommender, WRMFRecommender,
     UserKNNRecommender,
 )
 from reco_eval_kit.splitting import leave_one_out
@@ -85,6 +89,7 @@ popularity = train["item_id"].value_counts().to_dict()
 print(inverse_popularity_at_k(recs, popularity, k=2))
 
 bpr = BPRRecommender(seed=0).fit(train)
+wrmf = WRMFRecommender(n_factors=16, n_epochs=10, seed=0).fit(train)
 print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 
 knn = ItemKNNRecommender(similarity="cosine", n_neighbors=20).fit(train)
@@ -196,7 +201,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite
