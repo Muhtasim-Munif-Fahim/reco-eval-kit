@@ -13,6 +13,7 @@ from .baselines import (
     UserKNNRecommender,
     PureSVDRecommender,
     WRMFRecommender,
+    EASERecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -86,6 +87,7 @@ def main(argv=None) -> int:
         f"bpr(seed={args.seed})": BPRRecommender(seed=args.seed),
         "puresvd": PureSVDRecommender(n_factors=16),
         f"wrmf(seed={args.seed})": WRMFRecommender(n_factors=16, n_epochs=8, seed=args.seed),
+        "ease": EASERecommender(l2=200.0),
     }
 
     results = {}
