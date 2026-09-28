@@ -627,3 +627,87 @@ class WRMFRecommender:
         )
         return [item for item, _ in ranked][:k]
 
+
+
+class EASERecommender:
+    """Embarrassingly Shallow Autoencoders for Sparse Data (Steck, 2019).
+
+    Builds a binary user–item matrix ``X`` and the item–item Gram
+    ``G = XᵀX``. The closed-form item–item weight matrix is
+
+        ``P = (G + λ I)^{-1}``
+        ``B = I - P · diag(1 / diag(P))``
+
+    which forces ``diag(B) = 0`` so an item never reconstructs itself.
+    Users are scored by ``x_u @ B``. Unknown users fall back to the
+    popularity ranking. Score ties break by ascending item id.
+    """
+
+    def __init__(self, l2: float = 500.0) -> None:
+        l2 = float(l2)
+        if not (l2 > 0.0):
+            raise ValueError("l2 must be positive")
+        self.l2 = l2
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.item_weights_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._user_rows: Optional[np.ndarray] = None
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "EASERecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            self.item_weights_ = np.zeros((0, 0))
+            self._user_rows = np.zeros((0, 0))
+            return self
+
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        X = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            X[self._user_index[user], item_index[item]] = 1.0
+
+        G = X.T @ X
+        # P = (G + λ I)^{-1}
+        G = G + self.l2 * np.eye(n_items)
+        try:
+            P = np.linalg.inv(G)
+        except np.linalg.LinAlgError as exc:
+            raise ValueError("EASE Gram matrix is singular; increase l2") from exc
+        diag = np.diag(P).copy()
+        if np.any(np.abs(diag) < 1e-18):
+            raise ValueError("EASE inverse has a near-zero diagonal; increase l2")
+        # B = I - P @ diag(1/diag(P))  ⇒  zero diagonal, B_ij = -P_ij / P_ii
+        B = -P / diag[np.newaxis, :]
+        np.fill_diagonal(B, 0.0)
+        self.item_weights_ = B
+        self._user_rows = X
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.item_weights_ is None or self._user_rows is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = self._user_rows[user_idx] @ self.item_weights_
+        ranked = sorted(
+            (
+                (item, score)
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]

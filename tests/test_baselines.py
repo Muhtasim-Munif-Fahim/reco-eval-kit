@@ -6,6 +6,7 @@ from reco_eval_kit.baselines import (
     BPRRecommender,
     PureSVDRecommender,
     WRMFRecommender,
+    EASERecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -448,3 +449,49 @@ def test_wrmf_invalid_params_raise():
         WRMFRecommender(n_epochs=0)
     with pytest.raises(ValueError):
         WRMFRecommender(alpha=-1.0)
+
+
+def test_ease_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        EASERecommender().recommend("u1", k=2)
+
+
+def test_ease_deterministic_and_excludes_seen():
+    model = EASERecommender(l2=10.0).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = EASERecommender(l2=10.0).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_ease_unknown_user_falls_back_to_popularity():
+    model = EASERecommender(l2=10.0).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_ease_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3),
+        ("a2", 1), ("a2", 2), ("a2", 3),
+        ("a3", 1), ("a3", 2),
+        ("b1", 10), ("b1", 11), ("b1", 12),
+        ("b2", 10), ("b2", 11),
+    ]
+    model = EASERecommender(l2=1.0).fit(make_frame(pairs))
+    recs = model.recommend("a3", k=1, exclude={1, 2})
+    assert recs[0] == 3
+
+
+def test_ease_zero_diagonal():
+    model = EASERecommender(l2=5.0).fit(INTERACTIONS)
+    assert model.item_weights_ is not None
+    assert np.allclose(np.diag(model.item_weights_), 0.0)
+
+
+def test_ease_invalid_l2_raises():
+    with pytest.raises(ValueError):
+        EASERecommender(l2=0.0)
+    with pytest.raises(ValueError):
+        EASERecommender(l2=-1.0)
