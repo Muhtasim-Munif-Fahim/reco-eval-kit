@@ -3,7 +3,7 @@
 Ranking and beyond-accuracy evaluation toolkit for implicit-feedback
 recommender systems. It ships the standard top-K metrics, catalog-level and
 list-level quality measures, leave-one-out / leave-last-N protocols, a seeded
-synthetic interaction generator, nine baseline recommenders to score against,
+synthetic interaction generator, ten baseline recommenders to score against,
 and a small CLI that ties the whole loop together and writes a markdown report.
 
 ## Features
@@ -32,8 +32,10 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   on implicit pairwise triples, popularity fallback for unknown users),
   PureSVD (truncated SVD of the binary user–item matrix), WRMF /
   weighted ALS for implicit feedback (Hu, Koren & Volinsky; confidence
-  `c_ui = 1 + alpha * r_ui`), and EASE (Steck 2019 closed-form item–item
-  autoencoder: Gram + ridge, zero diagonal of B, score `X @ B`).
+  `c_ui = 1 + alpha * r_ui`), EASE (Steck 2019 closed-form item–item
+  autoencoder: Gram + ridge, zero diagonal of B, score `X @ B`), and SLIM
+  (Ning & Karypis 2011 sparse linear methods: per-item elastic-net /
+  coordinate-descent item–item weights with zero diagonal, score `X @ W`).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
 Catalog coverage and intra-list diversity are already part of the toolkit
@@ -68,7 +70,7 @@ from reco_eval_kit.metrics import (
 )
 from reco_eval_kit.baselines import (
     BPRRecommender, ItemKNNRecommender, PopularityRecommender,
-    PureSVDRecommender, WRMFRecommender, EASERecommender,
+    PureSVDRecommender, WRMFRecommender, EASERecommender, SlimRecommender,
     UserKNNRecommender,
 )
 from reco_eval_kit.splitting import leave_one_out
@@ -92,8 +94,10 @@ print(inverse_popularity_at_k(recs, popularity, k=2))
 bpr = BPRRecommender(seed=0).fit(train)
 wrmf = WRMFRecommender(n_factors=16, n_epochs=10, seed=0).fit(train)
 ease = EASERecommender(l2=200.0).fit(train)
+slim = SlimRecommender(l1_reg=0.05, l2_reg=0.1).fit(train)
 print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 print(ease.recommend(user_id=1, k=2, exclude={10, 11}))
+print(slim.recommend(user_id=1, k=2, exclude={10, 11}))
 
 knn = ItemKNNRecommender(similarity="cosine", n_neighbors=20).fit(train)
 print(knn.recommend(user_id=1, k=2, exclude={10, 11}))
@@ -204,7 +208,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite

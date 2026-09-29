@@ -711,3 +711,161 @@ class EASERecommender:
             key=lambda kv: (-kv[1], kv[0]),
         )
         return [item for item, _ in ranked][:k]
+
+
+
+class SlimRecommender:
+    """Sparse Linear Methods for top-N recommendation (Ning & Karypis, 2011).
+
+    Learns an item–item weight matrix ``W`` by solving, for each item ``j``,
+    an elastic-net / coordinate-descent regression of column ``j`` on all
+    other columns of the binary user–item matrix ``X``, with ``W_jj = 0``
+    so an item never reconstructs itself. Users are scored by ``x_u @ W``.
+    Unknown users fall back to the popularity ranking. Score ties break by
+    ascending item id.
+    """
+
+    def __init__(
+        self,
+        l1_reg: float = 0.1,
+        l2_reg: float = 0.1,
+        n_iter: int = 20,
+        tol: float = 1e-4,
+        non_negative: bool = True,
+    ) -> None:
+        l1_reg = float(l1_reg)
+        l2_reg = float(l2_reg)
+        n_iter = int(n_iter)
+        tol = float(tol)
+        if l1_reg < 0.0:
+            raise ValueError("l1_reg must be non-negative")
+        if l2_reg < 0.0:
+            raise ValueError("l2_reg must be non-negative")
+        if n_iter < 1:
+            raise ValueError("n_iter must be at least 1")
+        if not (tol >= 0.0):
+            raise ValueError("tol must be non-negative")
+        self.l1_reg = l1_reg
+        self.l2_reg = l2_reg
+        self.n_iter = n_iter
+        self.tol = tol
+        self.non_negative = bool(non_negative)
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.item_weights_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._user_rows: Optional[np.ndarray] = None
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "SlimRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            self.item_weights_ = np.zeros((0, 0))
+            self._user_rows = np.zeros((0, 0))
+            return self
+
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        X = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            X[self._user_index[user], item_index[item]] = 1.0
+
+        W = _slim_coordinate_descent(
+            X,
+            l1_reg=self.l1_reg,
+            l2_reg=self.l2_reg,
+            n_iter=self.n_iter,
+            tol=self.tol,
+            non_negative=self.non_negative,
+        )
+        self.item_weights_ = W
+        self._user_rows = X
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.item_weights_ is None or self._user_rows is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = self._user_rows[user_idx] @ self.item_weights_
+        ranked = sorted(
+            (
+                (item, score)
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]
+
+
+def _soft_threshold(value: float, threshold: float) -> float:
+    if value > threshold:
+        return value - threshold
+    if value < -threshold:
+        return value + threshold
+    return 0.0
+
+
+def _slim_coordinate_descent(
+    X: np.ndarray,
+    l1_reg: float,
+    l2_reg: float,
+    n_iter: int,
+    tol: float,
+    non_negative: bool,
+) -> np.ndarray:
+    """Per-item elastic-net coordinate descent with a zero diagonal.
+
+    For each column ``j`` solve
+    ``min_w ||X w - X[:, j]||^2 + l1 ||w||1 + l2 ||w||^2`` subject to
+    ``w_j = 0`` (and optionally ``w >= 0``).
+    """
+    n_users, n_items = X.shape
+    # Gram matrix G = XᵀX; column norms on the diagonal.
+    G = X.T @ X
+    W = np.zeros((n_items, n_items), dtype=np.float64)
+    for j in range(n_items):
+        # Residual starts as the target column (w = 0).
+        # Coordinate updates use the soft-thresholded Gram row.
+        w = np.zeros(n_items, dtype=np.float64)
+        # Working residual r = X[:, j] - X @ w  (initially X[:, j])
+        # For efficiency, keep Xt_r = X.T @ r = G[:, j] - G @ w
+        xt_r = G[:, j].copy()
+        for _ in range(n_iter):
+            max_delta = 0.0
+            for k in range(n_items):
+                if k == j:
+                    continue
+                g_kk = float(G[k, k])
+                if g_kk <= 0.0:
+                    continue
+                # Coordinate update: soft-threshold (xt_r_k + g_kk * w_k)
+                # then divide by (g_kk + l2).
+                rho = float(xt_r[k]) + g_kk * float(w[k])
+                new_wk = _soft_threshold(rho, l1_reg) / (g_kk + l2_reg)
+                if non_negative and new_wk < 0.0:
+                    new_wk = 0.0
+                delta = new_wk - float(w[k])
+                if delta != 0.0:
+                    # xt_r -= delta * G[:, k]
+                    xt_r -= delta * G[:, k]
+                    w[k] = new_wk
+                    max_delta = max(max_delta, abs(delta))
+            if max_delta < tol:
+                break
+        w[j] = 0.0
+        W[:, j] = w
+    np.fill_diagonal(W, 0.0)
+    return W

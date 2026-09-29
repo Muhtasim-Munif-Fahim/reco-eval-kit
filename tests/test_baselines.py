@@ -7,6 +7,7 @@ from reco_eval_kit.baselines import (
     PureSVDRecommender,
     WRMFRecommender,
     EASERecommender,
+    SlimRecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -495,3 +496,54 @@ def test_ease_invalid_l2_raises():
         EASERecommender(l2=0.0)
     with pytest.raises(ValueError):
         EASERecommender(l2=-1.0)
+
+
+def test_slim_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        SlimRecommender().recommend("u1", k=2)
+
+
+def test_slim_deterministic_and_excludes_seen():
+    model = SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=15).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=15).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_slim_unknown_user_falls_back_to_popularity():
+    model = SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=10).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_slim_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3),
+        ("a2", 1), ("a2", 2), ("a2", 3),
+        ("a3", 1), ("a3", 2),
+        ("b1", 10), ("b1", 11), ("b1", 12),
+        ("b2", 10), ("b2", 11),
+    ]
+    model = SlimRecommender(l1_reg=0.01, l2_reg=0.01, n_iter=25, non_negative=True).fit(
+        make_frame(pairs)
+    )
+    recs = model.recommend("a3", k=1, exclude={1, 2})
+    assert recs[0] == 3
+
+
+def test_slim_zero_diagonal():
+    model = SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=10).fit(INTERACTIONS)
+    assert model.item_weights_ is not None
+    assert np.allclose(np.diag(model.item_weights_), 0.0)
+
+
+def test_slim_invalid_params_raise():
+    with pytest.raises(ValueError):
+        SlimRecommender(l1_reg=-0.1)
+    with pytest.raises(ValueError):
+        SlimRecommender(l2_reg=-1.0)
+    with pytest.raises(ValueError):
+        SlimRecommender(n_iter=0)
+
