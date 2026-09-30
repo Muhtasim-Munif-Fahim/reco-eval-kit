@@ -15,6 +15,7 @@ from .baselines import (
     WRMFRecommender,
     EASERecommender,
     SlimRecommender,
+    NMFRecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -90,6 +91,7 @@ def main(argv=None) -> int:
         f"wrmf(seed={args.seed})": WRMFRecommender(n_factors=16, n_epochs=8, seed=args.seed),
         "ease": EASERecommender(l2=200.0),
         "slim": SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=15),
+        f"nmf(seed={args.seed})": NMFRecommender(n_factors=16, n_epochs=30, seed=args.seed),
     }
 
     results = {}
