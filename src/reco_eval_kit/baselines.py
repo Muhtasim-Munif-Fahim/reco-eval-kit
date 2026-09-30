@@ -869,3 +869,101 @@ def _slim_coordinate_descent(
         W[:, j] = w
     np.fill_diagonal(W, 0.0)
     return W
+
+
+
+class NMFRecommender:
+    """Non-negative matrix factorization recommender for implicit feedback.
+
+    Factors a binary user–item matrix ``X ≈ W @ H`` with Lee–Seung
+    multiplicative updates (Frobenius objective). Users are scored by
+    ``W[u] @ H``. Unknown users fall back to the popularity ranking.
+    Score ties break by ascending item id.
+    """
+
+    def __init__(
+        self,
+        n_factors: int = 16,
+        n_epochs: int = 50,
+        seed: int = 0,
+        eps: float = 1e-9,
+    ) -> None:
+        n_factors = int(n_factors)
+        n_epochs = int(n_epochs)
+        seed = int(seed)
+        eps = float(eps)
+        if n_factors < 1:
+            raise ValueError("n_factors must be at least 1")
+        if n_epochs < 1:
+            raise ValueError("n_epochs must be at least 1")
+        if not (eps > 0.0):
+            raise ValueError("eps must be positive")
+        self.n_factors = n_factors
+        self.n_epochs = n_epochs
+        self.seed = seed
+        self.eps = eps
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.user_factors_: Optional[np.ndarray] = None
+        self.item_factors_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "NMFRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        k = self.n_factors
+        if n_users == 0 or n_items == 0:
+            self.user_factors_ = np.zeros((0, k))
+            self.item_factors_ = np.zeros((k, 0))
+            return self
+
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        X = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            X[self._user_index[user], item_index[item]] = 1.0
+
+        rng = np.random.default_rng(self.seed)
+        # Positive random init scaled by data mean.
+        scale = max(float(X.mean()), self.eps)
+        W = rng.random((n_users, k)) * scale + self.eps
+        H = rng.random((k, n_items)) * scale + self.eps
+        for _ in range(self.n_epochs):
+            # H <- H * (W.T @ X) / (W.T @ W @ H)
+            numer_h = W.T @ X
+            denom_h = (W.T @ W) @ H + self.eps
+            H *= numer_h / denom_h
+            # W <- W * (X @ H.T) / (W @ H @ H.T)
+            numer_w = X @ H.T
+            denom_w = W @ (H @ H.T) + self.eps
+            W *= numer_w / denom_w
+        self.user_factors_ = W
+        self.item_factors_ = H
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.user_factors_ is None or self.item_factors_ is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = self.user_factors_[user_idx] @ self.item_factors_
+        ranked = sorted(
+            (
+                (item, score)
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]
