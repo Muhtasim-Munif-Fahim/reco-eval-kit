@@ -36,7 +36,7 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   autoencoder: Gram + ridge, zero diagonal of B, score `X @ B`), and SLIM
   (Ning & Karypis 2011 sparse linear methods: per-item elastic-net /
   coordinate-descent item–item weights with zero diagonal, score `X @ W`),
-  and NMF (Lee–Seung multiplicative updates on the binary user–item
+  NMF (Lee–Seung multiplicative updates on the binary user–item
   matrix, score `W[u] @ H`).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
@@ -99,6 +99,7 @@ wrmf = WRMFRecommender(n_factors=16, n_epochs=10, seed=0).fit(train)
 ease = EASERecommender(l2=200.0).fit(train)
 slim = SlimRecommender(l1_reg=0.05, l2_reg=0.1).fit(train)
 nmf = NMFRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
+item2vec = Item2VecRecommender(embedding_dim=32, n_epochs=5, seed=0).fit(train)
 print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 print(ease.recommend(user_id=1, k=2, exclude={10, 11}))
 print(slim.recommend(user_id=1, k=2, exclude={10, 11}))
@@ -212,7 +213,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite
