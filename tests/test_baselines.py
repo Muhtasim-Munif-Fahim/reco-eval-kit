@@ -9,6 +9,7 @@ from reco_eval_kit.baselines import (
     EASERecommender,
     SlimRecommender,
     NMFRecommender,
+    Item2VecRecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -596,3 +597,58 @@ def test_nmf_invalid_params_raise():
         NMFRecommender(n_factors=0)
     with pytest.raises(ValueError):
         NMFRecommender(n_epochs=0)
+
+
+
+def test_item2vec_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        Item2VecRecommender().recommend("u1", k=2)
+
+
+def test_item2vec_fit_recommend_shape():
+    model = Item2VecRecommender(embedding_dim=8, n_epochs=3, seed=0).fit(INTERACTIONS)
+    recs = model.recommend("u1", k=2, exclude={10, 11})
+    assert len(recs) == 2
+    assert len(set(recs)) == 2
+    assert set(recs).issubset({12, 14})
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_item2vec_deterministic_and_excludes_seen():
+    model = Item2VecRecommender(embedding_dim=8, n_epochs=3, seed=0).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = Item2VecRecommender(embedding_dim=8, n_epochs=3, seed=0).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+
+
+def test_item2vec_unknown_user_falls_back_to_popularity():
+    model = Item2VecRecommender(embedding_dim=4, n_epochs=2, seed=0).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_item2vec_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3), ("a1", 4),
+        ("a2", 1), ("a2", 2), ("a2", 3), ("a2", 4),
+        ("a3", 1), ("a3", 2), ("a3", 3),
+        ("b1", 10), ("b1", 11), ("b1", 12), ("b1", 13),
+        ("b2", 10), ("b2", 11), ("b2", 12),
+    ]
+    model = Item2VecRecommender(
+        embedding_dim=8, window=2, n_epochs=40, n_negatives=3, seed=0
+    ).fit(make_frame(pairs))
+    recs = model.recommend("a3", k=1, exclude={1, 2, 3})
+    assert recs[0] == 4
+
+
+def test_item2vec_invalid_params_raise():
+    with pytest.raises(ValueError):
+        Item2VecRecommender(embedding_dim=0)
+    with pytest.raises(ValueError):
+        Item2VecRecommender(n_epochs=0)
+    with pytest.raises(ValueError):
+        Item2VecRecommender(window=0)
+    with pytest.raises(ValueError):
+        Item2VecRecommender(n_negatives=0)

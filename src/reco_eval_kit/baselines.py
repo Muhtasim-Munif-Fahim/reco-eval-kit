@@ -967,3 +967,176 @@ class NMFRecommender:
             key=lambda kv: (-kv[1], kv[0]),
         )
         return [item for item, _ in ranked][:k]
+
+
+class Item2VecRecommender:
+    """Skip-gram with negative sampling recommender over item sequences (Item2Vec).
+
+    Each user's interaction history is treated as a "sentence" of items.
+    Skip-gram with negative sampling (SGNS) learns dense item embeddings so
+    that items co-occurring in the same window predict each other. A user is
+    scored by the mean embedding of their history dotted with every item
+    vector. Unknown users fall back to the popularity ranking. Score ties
+    break by ascending item id.
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int = 32,
+        window: int = 2,
+        n_negatives: int = 5,
+        n_epochs: int = 5,
+        learning_rate: float = 0.05,
+        seed: int = 0,
+    ) -> None:
+        embedding_dim = int(embedding_dim)
+        window = int(window)
+        n_negatives = int(n_negatives)
+        n_epochs = int(n_epochs)
+        learning_rate = float(learning_rate)
+        seed = int(seed)
+        if embedding_dim < 1:
+            raise ValueError("embedding_dim must be at least 1")
+        if window < 1:
+            raise ValueError("window must be at least 1")
+        if n_negatives < 1:
+            raise ValueError("n_negatives must be at least 1")
+        if n_epochs < 1:
+            raise ValueError("n_epochs must be at least 1")
+        if not (learning_rate > 0.0):
+            raise ValueError("learning_rate must be positive")
+        self.embedding_dim = embedding_dim
+        self.window = window
+        self.n_negatives = n_negatives
+        self.n_epochs = n_epochs
+        self.learning_rate = learning_rate
+        self.seed = seed
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.item_embeddings_: Optional[np.ndarray] = None
+        self._item_index: dict = {}
+        self._user_index: dict = {}
+        self._user_vectors: Optional[np.ndarray] = None
+        self._fallback = PopularityRecommender()
+
+    @staticmethod
+    def _sigmoid(x: np.ndarray) -> np.ndarray:
+        x = np.clip(x, -20.0, 20.0)
+        return 1.0 / (1.0 + np.exp(-x))
+
+    def fit(self, interactions: pd.DataFrame) -> "Item2VecRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        # Preserve encounter order within each user for sequence modelling.
+        ordered = interactions[["user_id", "item_id"]].copy()
+        users = sorted(set(ordered["user_id"].tolist()))
+        self.catalog_ = sorted(set(ordered["item_id"].tolist()))
+        self._item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        # Deduplicated sets for exclude-seen; sequences keep first-seen order.
+        self.histories_ = {}
+        sequences: list = []
+        for user, group in ordered.groupby("user_id", sort=False):
+            seen = []
+            seen_set = set()
+            for item in group["item_id"].tolist():
+                if item not in seen_set:
+                    seen.append(item)
+                    seen_set.add(item)
+            self.histories_[user] = set(seen)
+            sequences.append([self._item_index[i] for i in seen])
+
+        n_items = len(self.catalog_)
+        d = self.embedding_dim
+        if n_items == 0:
+            self.item_embeddings_ = np.zeros((0, d))
+            self._user_vectors = np.zeros((0, d))
+            return self
+
+        rng = np.random.default_rng(self.seed)
+        # Input and output embeddings (SGNS).
+        scale = 0.5 / d
+        W_in = (rng.random((n_items, d)) - 0.5) * scale
+        W_out = (rng.random((n_items, d)) - 0.5) * scale
+
+        # Unigram^{3/4} noise distribution for negatives.
+        counts = np.zeros(n_items, dtype=np.float64)
+        for seq in sequences:
+            for idx in seq:
+                counts[idx] += 1.0
+        noise = np.power(np.maximum(counts, 1.0), 0.75)
+        noise /= noise.sum()
+
+        pairs: list = []
+        for seq in sequences:
+            L = len(seq)
+            if L < 2:
+                continue
+            for pos, center in enumerate(seq):
+                lo = max(0, pos - self.window)
+                hi = min(L, pos + self.window + 1)
+                for ctx_pos in range(lo, hi):
+                    if ctx_pos == pos:
+                        continue
+                    pairs.append((center, seq[ctx_pos]))
+        if not pairs:
+            self.item_embeddings_ = W_in
+            self._user_vectors = self._build_user_vectors(users, W_in)
+            return self
+
+        lr = self.learning_rate
+        for _epoch in range(self.n_epochs):
+            rng.shuffle(pairs)
+            for center, context in pairs:
+                v_in = W_in[center]
+                # Positive
+                score = float(np.dot(v_in, W_out[context]))
+                g = self._sigmoid(np.array([score]))[0] - 1.0
+                grad_in = g * W_out[context]
+                W_out[context] -= lr * g * v_in
+                # Negatives
+                negs = rng.choice(n_items, size=self.n_negatives, replace=True, p=noise)
+                for neg in negs:
+                    if int(neg) == int(context):
+                        continue
+                    score_n = float(np.dot(v_in, W_out[neg]))
+                    g_n = self._sigmoid(np.array([score_n]))[0]
+                    grad_in = grad_in + g_n * W_out[neg]
+                    W_out[neg] -= lr * g_n * v_in
+                W_in[center] -= lr * grad_in
+
+        self.item_embeddings_ = W_in
+        self._user_vectors = self._build_user_vectors(users, W_in)
+        return self
+
+    def _build_user_vectors(self, users: list, embeddings: np.ndarray) -> np.ndarray:
+        d = embeddings.shape[1]
+        vectors = np.zeros((len(users), d), dtype=np.float64)
+        for user in users:
+            uidx = self._user_index[user]
+            items = self.histories_.get(user, set())
+            if not items:
+                continue
+            idxs = [self._item_index[i] for i in items if i in self._item_index]
+            if idxs:
+                vectors[uidx] = embeddings[idxs].mean(axis=0)
+        return vectors
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.item_embeddings_ is None or self._user_vectors is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        uvec = self._user_vectors[user_idx]
+        scores = self.item_embeddings_ @ uvec
+        ranked = sorted(
+            (
+                (item, float(score))
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]
