@@ -1140,3 +1140,199 @@ class Item2VecRecommender:
             key=lambda kv: (-kv[1], kv[0]),
         )
         return [item for item, _ in ranked][:k]
+
+
+class FactorizationMachineRecommender:
+    """2-way Factorization Machine recommender for implicit feedback (Rendle).
+
+    Users and items are one-hot features. With only those two active features
+    the FM prediction collapses to::
+
+        ŷ(u, i) = w0 + w_u + w_i + <v_u, v_i>
+
+    Latent factor vectors ``v`` and biases are learned with SGD on observed
+    interactions (label 1) and sampled unobserved negatives (label 0) under
+    logistic loss. Unknown users fall back to the popularity ranking. Score
+    ties break by ascending item id.
+    """
+
+    def __init__(
+        self,
+        n_factors: int = 16,
+        n_epochs: int = 30,
+        learning_rate: float = 0.05,
+        regularization: float = 0.01,
+        n_negatives: int = 1,
+        seed: int = 0,
+    ) -> None:
+        n_factors = int(n_factors)
+        n_epochs = int(n_epochs)
+        learning_rate = float(learning_rate)
+        regularization = float(regularization)
+        n_negatives = int(n_negatives)
+        seed = int(seed)
+        if n_factors < 1:
+            raise ValueError("n_factors must be at least 1")
+        if n_epochs < 1:
+            raise ValueError("n_epochs must be at least 1")
+        if not (learning_rate > 0.0):
+            raise ValueError("learning_rate must be positive")
+        if regularization < 0.0:
+            raise ValueError("regularization must be non-negative")
+        if n_negatives < 1:
+            raise ValueError("n_negatives must be at least 1")
+        self.n_factors = n_factors
+        self.n_epochs = n_epochs
+        self.learning_rate = learning_rate
+        self.regularization = regularization
+        self.n_negatives = n_negatives
+        self.seed = seed
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.user_factors_: Optional[np.ndarray] = None
+        self.item_factors_: Optional[np.ndarray] = None
+        self.user_bias_: Optional[np.ndarray] = None
+        self.item_bias_: Optional[np.ndarray] = None
+        self.global_bias_: float = 0.0
+        self._user_index: dict = {}
+        self._fallback = PopularityRecommender()
+
+    @staticmethod
+    def _sigmoid(x: float) -> float:
+        if x >= 35.0:
+            return 1.0
+        if x <= -35.0:
+            return 0.0
+        return 1.0 / (1.0 + math.exp(-x))
+
+    def _score(
+        self,
+        u_idx: int,
+        i_idx: int,
+        user_factors: np.ndarray,
+        item_factors: np.ndarray,
+        user_bias: np.ndarray,
+        item_bias: np.ndarray,
+        w0: float,
+    ) -> float:
+        return float(
+            w0
+            + user_bias[u_idx]
+            + item_bias[i_idx]
+            + np.dot(user_factors[u_idx], item_factors[i_idx])
+        )
+
+    def fit(self, interactions: pd.DataFrame) -> "FactorizationMachineRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        k = self.n_factors
+        if n_users == 0 or n_items == 0:
+            self.user_factors_ = np.zeros((0, k))
+            self.item_factors_ = np.zeros((0, k))
+            self.user_bias_ = np.zeros(0)
+            self.item_bias_ = np.zeros(0)
+            self.global_bias_ = 0.0
+            return self
+
+        rng = np.random.default_rng(self.seed)
+        scale = 0.1
+        user_factors = rng.normal(0.0, scale, size=(n_users, k))
+        item_factors = rng.normal(0.0, scale, size=(n_items, k))
+        user_bias = np.zeros(n_users, dtype=float)
+        item_bias = np.zeros(n_items, dtype=float)
+        w0 = 0.0
+
+        seen_mask = np.zeros((n_users, n_items), dtype=bool)
+        observed: list = []
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            u_idx = self._user_index[user]
+            i_idx = item_index[item]
+            if not seen_mask[u_idx, i_idx]:
+                seen_mask[u_idx, i_idx] = True
+                observed.append((u_idx, i_idx))
+        observed_pairs = np.array(observed, dtype=np.int64)
+        seen_counts = seen_mask.sum(axis=1)
+        lr = self.learning_rate
+        reg = self.regularization
+
+        for _ in range(self.n_epochs):
+            rng.shuffle(observed_pairs)
+            for u_idx, i_idx in observed_pairs:
+                u_idx = int(u_idx)
+                i_idx = int(i_idx)
+                # Positive interaction
+                pred = self._score(
+                    u_idx, i_idx, user_factors, item_factors, user_bias, item_bias, w0
+                )
+                err = 1.0 - self._sigmoid(pred)
+                pu = user_factors[u_idx].copy()
+                qi = item_factors[i_idx].copy()
+                user_factors[u_idx] += lr * (err * qi - reg * pu)
+                item_factors[i_idx] += lr * (err * pu - reg * qi)
+                user_bias[u_idx] += lr * (err - reg * user_bias[u_idx])
+                item_bias[i_idx] += lr * (err - reg * item_bias[i_idx])
+                w0 += lr * (err - reg * w0)
+                # Negatives
+                if int(seen_counts[u_idx]) >= n_items:
+                    continue
+                for _neg in range(self.n_negatives):
+                    j_idx = int(rng.integers(0, n_items))
+                    while seen_mask[u_idx, j_idx]:
+                        j_idx = int(rng.integers(0, n_items))
+                    pred_n = self._score(
+                        u_idx, j_idx, user_factors, item_factors, user_bias, item_bias, w0
+                    )
+                    err_n = 0.0 - self._sigmoid(pred_n)
+                    pu = user_factors[u_idx].copy()
+                    qj = item_factors[j_idx].copy()
+                    user_factors[u_idx] += lr * (err_n * qj - reg * pu)
+                    item_factors[j_idx] += lr * (err_n * pu - reg * qj)
+                    user_bias[u_idx] += lr * (err_n - reg * user_bias[u_idx])
+                    item_bias[j_idx] += lr * (err_n - reg * item_bias[j_idx])
+                    w0 += lr * (err_n - reg * w0)
+
+        self.user_factors_ = user_factors
+        self.item_factors_ = item_factors
+        self.user_bias_ = user_bias
+        self.item_bias_ = item_bias
+        self.global_bias_ = float(w0)
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if (
+            self.user_factors_ is None
+            or self.item_factors_ is None
+            or self.user_bias_ is None
+            or self.item_bias_ is None
+        ):
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = (
+            self.global_bias_
+            + self.user_bias_[user_idx]
+            + self.item_bias_
+            + self.item_factors_ @ self.user_factors_[user_idx]
+        )
+        ranked = sorted(
+            (
+                (item, float(score))
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]

@@ -17,6 +17,7 @@ from .baselines import (
     SlimRecommender,
     NMFRecommender,
     Item2VecRecommender,
+    FactorizationMachineRecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -94,6 +95,7 @@ def main(argv=None) -> int:
         "slim": SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=15),
         f"nmf(seed={args.seed})": NMFRecommender(n_factors=16, n_epochs=30, seed=args.seed),
         f"item2vec(seed={args.seed})": Item2VecRecommender(embedding_dim=16, n_epochs=3, seed=args.seed),
+        f"fm(seed={args.seed})": FactorizationMachineRecommender(n_factors=16, n_epochs=20, seed=args.seed),
     }
 
     results = {}

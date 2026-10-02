@@ -10,6 +10,7 @@ from reco_eval_kit.baselines import (
     SlimRecommender,
     NMFRecommender,
     Item2VecRecommender,
+    FactorizationMachineRecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -652,3 +653,55 @@ def test_item2vec_invalid_params_raise():
         Item2VecRecommender(window=0)
     with pytest.raises(ValueError):
         Item2VecRecommender(n_negatives=0)
+
+
+def test_fm_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        FactorizationMachineRecommender().recommend("u1", k=2)
+
+
+def test_fm_fit_recommend_shape():
+    model = FactorizationMachineRecommender(n_factors=8, n_epochs=20, seed=0).fit(INTERACTIONS)
+    recs = model.recommend("u1", k=2, exclude={10, 11})
+    assert len(recs) == 2
+    assert len(set(recs)) == 2
+    assert set(recs).issubset({12, 14})
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_fm_deterministic_and_excludes_seen():
+    model = FactorizationMachineRecommender(n_factors=8, n_epochs=20, seed=0).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = FactorizationMachineRecommender(n_factors=8, n_epochs=20, seed=0).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+
+
+def test_fm_unknown_user_falls_back_to_popularity():
+    model = FactorizationMachineRecommender(n_factors=4, n_epochs=10, seed=0).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_fm_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3),
+        ("a2", 1), ("a2", 2), ("a2", 3),
+        ("a3", 1), ("a3", 2),
+        ("b1", 10), ("b1", 11), ("b1", 12),
+        ("b2", 10), ("b2", 11),
+    ]
+    model = FactorizationMachineRecommender(
+        n_factors=8, n_epochs=80, learning_rate=0.05, n_negatives=2, seed=0
+    ).fit(make_frame(pairs))
+    recs = model.recommend("a3", k=1, exclude={1, 2})
+    assert recs[0] == 3
+
+
+def test_fm_invalid_params_raise():
+    with pytest.raises(ValueError):
+        FactorizationMachineRecommender(n_factors=0)
+    with pytest.raises(ValueError):
+        FactorizationMachineRecommender(n_epochs=0)
+    with pytest.raises(ValueError):
+        FactorizationMachineRecommender(n_negatives=0)
