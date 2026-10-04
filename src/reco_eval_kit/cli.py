@@ -18,6 +18,7 @@ from .baselines import (
     NMFRecommender,
     Item2VecRecommender,
     FactorizationMachineRecommender,
+    SVDPlusPlusRecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -96,6 +97,7 @@ def main(argv=None) -> int:
         f"nmf(seed={args.seed})": NMFRecommender(n_factors=16, n_epochs=30, seed=args.seed),
         f"item2vec(seed={args.seed})": Item2VecRecommender(embedding_dim=16, n_epochs=3, seed=args.seed),
         f"fm(seed={args.seed})": FactorizationMachineRecommender(n_factors=16, n_epochs=20, seed=args.seed),
+        f"svdpp(seed={args.seed})": SVDPlusPlusRecommender(n_factors=16, n_epochs=20, seed=args.seed),
     }
 
     results = {}

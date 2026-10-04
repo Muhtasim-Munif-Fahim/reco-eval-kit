@@ -37,7 +37,8 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   (Ning & Karypis 2011 sparse linear methods: per-item elastic-net /
   coordinate-descent item–item weights with zero diagonal, score `X @ W`),
   Factorization Machine (Rendle 2-way FM with user+item one-hot factors
-  and SGD on positives/negatives), NMF (Lee–Seung multiplicative updates on the binary user–item
+  and SGD on positives/negatives), SVD++ (Koren: biases + latent factors plus
+  normalized sum of item implicit-feedback factors), NMF (Lee–Seung multiplicative updates on the binary user–item
   matrix, score `W[u] @ H`).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
@@ -76,6 +77,7 @@ from reco_eval_kit.baselines import (
     PureSVDRecommender, WRMFRecommender, EASERecommender, SlimRecommender,
     NMFRecommender,
     FactorizationMachineRecommender,
+    SVDPlusPlusRecommender,
     UserKNNRecommender,
 )
 from reco_eval_kit.splitting import leave_one_out
@@ -103,6 +105,7 @@ slim = SlimRecommender(l1_reg=0.05, l2_reg=0.1).fit(train)
 nmf = NMFRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
 item2vec = Item2VecRecommender(embedding_dim=32, n_epochs=5, seed=0).fit(train)
 fm = FactorizationMachineRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
+svdpp = SVDPlusPlusRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
 print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 print(ease.recommend(user_id=1, k=2, exclude={10, 11}))
 print(slim.recommend(user_id=1, k=2, exclude={10, 11}))
@@ -216,7 +219,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM, SVD++
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite

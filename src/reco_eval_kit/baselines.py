@@ -1336,3 +1336,275 @@ class FactorizationMachineRecommender:
             key=lambda kv: (-kv[1], kv[0]),
         )
         return [item for item, _ in ranked][:k]
+
+
+
+class SVDPlusPlusRecommender:
+    """SVD++ recommender for implicit feedback (Koren).
+
+    Extends biased matrix factorization with user implicit-feedback factors.
+    The predicted score for user ``u`` and item ``i`` is::
+
+        ŷ_ui = μ + b_u + b_i + q_iᵀ (p_u + |N(u)|^{-1/2} Σ_{j ∈ N(u)} y_j)
+
+    where ``N(u)`` is the set of items ``u`` interacted with, ``p_u`` / ``q_i``
+    are latent factors, and ``y_j`` are item implicit-feedback factors.
+    Parameters are learned with SGD on observed interactions (label 1) and
+    sampled unobserved negatives (label 0) under logistic loss. Unknown users
+    fall back to the popularity ranking. Score ties break by ascending item id.
+    """
+
+    def __init__(
+        self,
+        n_factors: int = 16,
+        n_epochs: int = 30,
+        learning_rate: float = 0.05,
+        regularization: float = 0.01,
+        n_negatives: int = 1,
+        seed: int = 0,
+    ) -> None:
+        n_factors = int(n_factors)
+        n_epochs = int(n_epochs)
+        learning_rate = float(learning_rate)
+        regularization = float(regularization)
+        n_negatives = int(n_negatives)
+        seed = int(seed)
+        if n_factors < 1:
+            raise ValueError("n_factors must be at least 1")
+        if n_epochs < 1:
+            raise ValueError("n_epochs must be at least 1")
+        if not (learning_rate > 0.0):
+            raise ValueError("learning_rate must be positive")
+        if regularization < 0.0:
+            raise ValueError("regularization must be non-negative")
+        if n_negatives < 1:
+            raise ValueError("n_negatives must be at least 1")
+        self.n_factors = n_factors
+        self.n_epochs = n_epochs
+        self.learning_rate = learning_rate
+        self.regularization = regularization
+        self.n_negatives = n_negatives
+        self.seed = seed
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.user_factors_: Optional[np.ndarray] = None
+        self.item_factors_: Optional[np.ndarray] = None
+        self.implicit_factors_: Optional[np.ndarray] = None
+        self.user_bias_: Optional[np.ndarray] = None
+        self.item_bias_: Optional[np.ndarray] = None
+        self.global_bias_: float = 0.0
+        self._user_index: dict = {}
+        self._item_index: dict = {}
+        self._user_history_idxs: dict = {}
+        self._fallback = PopularityRecommender()
+
+    @staticmethod
+    def _sigmoid(x: float) -> float:
+        if x >= 35.0:
+            return 1.0
+        if x <= -35.0:
+            return 0.0
+        return 1.0 / (1.0 + math.exp(-x))
+
+    def _user_implicit(self, u_idx: int, y: np.ndarray) -> np.ndarray:
+        idxs = self._user_history_idxs.get(u_idx, [])
+        if not idxs:
+            return np.zeros(self.n_factors, dtype=float)
+        scale = 1.0 / math.sqrt(len(idxs))
+        return scale * y[idxs].sum(axis=0)
+
+    def _score_pair(
+        self,
+        u_idx: int,
+        i_idx: int,
+        p: np.ndarray,
+        q: np.ndarray,
+        y: np.ndarray,
+        bu: np.ndarray,
+        bi: np.ndarray,
+        mu: float,
+        implicit: Optional[np.ndarray] = None,
+    ) -> float:
+        if implicit is None:
+            implicit = self._user_implicit(u_idx, y)
+        return float(mu + bu[u_idx] + bi[i_idx] + np.dot(q[i_idx], p[u_idx] + implicit))
+
+    def fit(self, interactions: pd.DataFrame) -> "SVDPlusPlusRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        self._item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        k = self.n_factors
+        if n_users == 0 or n_items == 0:
+            self.user_factors_ = np.zeros((0, k))
+            self.item_factors_ = np.zeros((0, k))
+            self.implicit_factors_ = np.zeros((0, k))
+            self.user_bias_ = np.zeros(0)
+            self.item_bias_ = np.zeros(0)
+            self.global_bias_ = 0.0
+            self._user_history_idxs = {}
+            return self
+
+        self._user_history_idxs = {}
+        for user, items in self.histories_.items():
+            u_idx = self._user_index[user]
+            self._user_history_idxs[u_idx] = [
+                self._item_index[item] for item in items if item in self._item_index
+            ]
+
+        rng = np.random.default_rng(self.seed)
+        scale = 0.1
+        p = rng.normal(0.0, scale, size=(n_users, k))
+        q = rng.normal(0.0, scale, size=(n_items, k))
+        y = rng.normal(0.0, scale, size=(n_items, k))
+        bu = np.zeros(n_users, dtype=float)
+        bi = np.zeros(n_items, dtype=float)
+        mu = 0.0
+
+        seen_mask = np.zeros((n_users, n_items), dtype=bool)
+        observed: list = []
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            u_idx = self._user_index[user]
+            i_idx = self._item_index[item]
+            if not seen_mask[u_idx, i_idx]:
+                seen_mask[u_idx, i_idx] = True
+                observed.append((u_idx, i_idx))
+        observed_pairs = np.array(observed, dtype=np.int64)
+        seen_counts = seen_mask.sum(axis=1)
+        lr = self.learning_rate
+        reg = self.regularization
+
+        # Cache |N(u)|^{-1/2} * sum y_j; refreshed after each epoch's y updates
+        # by recomputing per user on demand during the pass.
+        for _ in range(self.n_epochs):
+            rng.shuffle(observed_pairs)
+            for u_idx, i_idx in observed_pairs:
+                u_idx = int(u_idx)
+                i_idx = int(i_idx)
+                hist = self._user_history_idxs.get(u_idx, [])
+                n_u = len(hist)
+                scale_u = 1.0 / math.sqrt(n_u) if n_u > 0 else 0.0
+                implicit = scale_u * y[hist].sum(axis=0) if n_u > 0 else np.zeros(k)
+
+                def _update(target_idx: int, label: float) -> None:
+                    nonlocal mu
+                    pu = p[u_idx].copy()
+                    qi = q[target_idx].copy()
+                    pred = float(mu + bu[u_idx] + bi[target_idx] + np.dot(qi, pu + implicit))
+                    err = label - self._sigmoid(pred)
+                    # Gradients w.r.t. p, q, biases, mu
+                    p[u_idx] += lr * (err * qi - reg * pu)
+                    q[target_idx] += lr * (err * (pu + implicit) - reg * qi)
+                    bu[u_idx] += lr * (err - reg * bu[u_idx])
+                    bi[target_idx] += lr * (err - reg * bi[target_idx])
+                    mu += lr * (err - reg * mu)
+                    # Implicit factors y_j for j in N(u)
+                    if n_u > 0:
+                        for j_idx in hist:
+                            yj = y[j_idx].copy()
+                            y[j_idx] += lr * (err * scale_u * qi - reg * yj)
+
+                _update(i_idx, 1.0)
+                if int(seen_counts[u_idx]) >= n_items:
+                    continue
+                for _neg in range(self.n_negatives):
+                    j_idx = int(rng.integers(0, n_items))
+                    while seen_mask[u_idx, j_idx]:
+                        j_idx = int(rng.integers(0, n_items))
+                    # Recompute implicit after positive update may have changed y
+                    implicit = scale_u * y[hist].sum(axis=0) if n_u > 0 else np.zeros(k)
+                    _update(j_idx, 0.0)
+
+        self.user_factors_ = p
+        self.item_factors_ = q
+        self.implicit_factors_ = y
+        self.user_bias_ = bu
+        self.item_bias_ = bi
+        self.global_bias_ = float(mu)
+        return self
+
+    def score(self, user_id, item_id=None):
+        """Return predicted score(s) for a user.
+
+        Parameters
+        ----------
+        user_id
+            User identifier seen at fit time.
+        item_id
+            Optional single item id. When omitted, returns a dict mapping every
+            catalog item to its score. Unknown users raise ``KeyError``.
+        """
+        if (
+            self.user_factors_ is None
+            or self.item_factors_ is None
+            or self.implicit_factors_ is None
+            or self.user_bias_ is None
+            or self.item_bias_ is None
+        ):
+            raise RuntimeError("fit must be called before score")
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            raise KeyError(f"unknown user_id: {user_id!r}")
+        implicit = self._user_implicit(user_idx, self.implicit_factors_)
+        user_vec = self.user_factors_[user_idx] + implicit
+        if item_id is None:
+            scores = (
+                self.global_bias_
+                + self.user_bias_[user_idx]
+                + self.item_bias_
+                + self.item_factors_ @ user_vec
+            )
+            return {item: float(s) for item, s in zip(self.catalog_, scores)}
+        i_idx = self._item_index.get(item_id)
+        if i_idx is None:
+            raise KeyError(f"unknown item_id: {item_id!r}")
+        return float(
+            self.global_bias_
+            + self.user_bias_[user_idx]
+            + self.item_bias_[i_idx]
+            + np.dot(self.item_factors_[i_idx], user_vec)
+        )
+
+    def predict(self, user_id, item_id):
+        """Alias for ``score(user_id, item_id)`` for a single pair."""
+        return self.score(user_id, item_id)
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if (
+            self.user_factors_ is None
+            or self.item_factors_ is None
+            or self.implicit_factors_ is None
+            or self.user_bias_ is None
+            or self.item_bias_ is None
+        ):
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        implicit = self._user_implicit(user_idx, self.implicit_factors_)
+        user_vec = self.user_factors_[user_idx] + implicit
+        scores = (
+            self.global_bias_
+            + self.user_bias_[user_idx]
+            + self.item_bias_
+            + self.item_factors_ @ user_vec
+        )
+        ranked = sorted(
+            (
+                (item, float(score))
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        return [item for item, _ in ranked][:k]

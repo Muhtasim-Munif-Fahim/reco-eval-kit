@@ -11,6 +11,7 @@ from reco_eval_kit.baselines import (
     NMFRecommender,
     Item2VecRecommender,
     FactorizationMachineRecommender,
+    SVDPlusPlusRecommender,
     ItemItemCooccurrenceRecommender,
     ItemKNNRecommender,
     PopularityRecommender,
@@ -705,3 +706,70 @@ def test_fm_invalid_params_raise():
         FactorizationMachineRecommender(n_epochs=0)
     with pytest.raises(ValueError):
         FactorizationMachineRecommender(n_negatives=0)
+
+
+
+def test_svdpp_recommend_before_fit_raises():
+    with pytest.raises(RuntimeError):
+        SVDPlusPlusRecommender().recommend("u1", k=2)
+
+
+def test_svdpp_fit_recommend_shape():
+    model = SVDPlusPlusRecommender(n_factors=8, n_epochs=20, seed=0).fit(INTERACTIONS)
+    recs = model.recommend("u1", k=2, exclude={10, 11})
+    assert len(recs) == 2
+    assert len(set(recs)) == 2
+    assert set(recs).issubset({12, 14})
+    assert set(model.recommend("u1", k=10)).isdisjoint({10, 11})
+
+
+def test_svdpp_deterministic_and_excludes_seen():
+    model = SVDPlusPlusRecommender(n_factors=8, n_epochs=20, seed=0).fit(INTERACTIONS)
+    first = model.recommend("u1", k=3, exclude={10, 11})
+    second = SVDPlusPlusRecommender(n_factors=8, n_epochs=20, seed=0).fit(INTERACTIONS).recommend(
+        "u1", k=3, exclude={10, 11}
+    )
+    assert first == second
+
+
+def test_svdpp_unknown_user_falls_back_to_popularity():
+    model = SVDPlusPlusRecommender(n_factors=4, n_epochs=10, seed=0).fit(INTERACTIONS)
+    assert model.recommend("nobody", k=2) == [10, 11]
+
+
+def test_svdpp_empty_user_history_still_ranks():
+    # User with empty history after exclude of everything they saw: still gets catalog items.
+    model = SVDPlusPlusRecommender(n_factors=4, n_epochs=10, seed=0).fit(INTERACTIONS)
+    # Unknown user with empty history path via fallback already tested; known user with
+    # all items excluded returns [].
+    assert model.recommend("u4", k=10, exclude={10, 11, 12, 14}) == []
+    # score / predict for a known user works
+    s = model.score("u1", 12)
+    assert np.isfinite(s)
+    assert model.predict("u1", 12) == s
+    all_scores = model.score("u1")
+    assert set(all_scores) == {10, 11, 12, 14}
+
+
+def test_svdpp_recovers_held_out_affinity():
+    pairs = [
+        ("a1", 1), ("a1", 2), ("a1", 3),
+        ("a2", 1), ("a2", 2), ("a2", 3),
+        ("a3", 1), ("a3", 2),
+        ("b1", 10), ("b1", 11), ("b1", 12),
+        ("b2", 10), ("b2", 11),
+    ]
+    model = SVDPlusPlusRecommender(
+        n_factors=8, n_epochs=80, learning_rate=0.05, n_negatives=2, seed=0
+    ).fit(make_frame(pairs))
+    recs = model.recommend("a3", k=1, exclude={1, 2})
+    assert recs[0] == 3
+
+
+def test_svdpp_invalid_params_raise():
+    with pytest.raises(ValueError):
+        SVDPlusPlusRecommender(n_factors=0)
+    with pytest.raises(ValueError):
+        SVDPlusPlusRecommender(n_epochs=0)
+    with pytest.raises(ValueError):
+        SVDPlusPlusRecommender(n_negatives=0)
