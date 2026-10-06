@@ -19,6 +19,7 @@ from .baselines import (
     Item2VecRecommender,
     FactorizationMachineRecommender,
     SVDPlusPlusRecommender,
+    RP3betaRecommender,
 )
 from .beyond_accuracy import (
     catalog_coverage,
@@ -93,6 +94,7 @@ def main(argv=None) -> int:
         "puresvd": PureSVDRecommender(n_factors=16),
         f"wrmf(seed={args.seed})": WRMFRecommender(n_factors=16, n_epochs=8, seed=args.seed),
         "ease": EASERecommender(l2=200.0),
+        "rp3beta": RP3betaRecommender(alpha=1.0, beta=0.5),
         "slim": SlimRecommender(l1_reg=0.05, l2_reg=0.1, n_iter=15),
         f"nmf(seed={args.seed})": NMFRecommender(n_factors=16, n_epochs=30, seed=args.seed),
         f"item2vec(seed={args.seed})": Item2VecRecommender(embedding_dim=16, n_epochs=3, seed=args.seed),

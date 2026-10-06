@@ -39,7 +39,9 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   Factorization Machine (Rendle 2-way FM with user+item one-hot factors
   and SGD on positives/negatives), SVD++ (Koren: biases + latent factors plus
   normalized sum of item implicit-feedback factors), NMF (Lee–Seung multiplicative updates on the binary user–item
-  matrix, score `W[u] @ H`).
+  matrix, score `W[u] @ H`), and RP3beta (Paudel et al. 2016 graph random
+  walk `user → item → user → item` with transition exponent `alpha` and
+  popularity penalty `deg(j) ** beta`; `beta = 0` is P3alpha).
 - **Reporting** — markdown tables of all metrics per model, written to disk.
 
 Catalog coverage and intra-list diversity are already part of the toolkit
@@ -78,6 +80,7 @@ from reco_eval_kit.baselines import (
     NMFRecommender,
     FactorizationMachineRecommender,
     SVDPlusPlusRecommender,
+    RP3betaRecommender,
     UserKNNRecommender,
 )
 from reco_eval_kit.splitting import leave_one_out
@@ -106,6 +109,7 @@ nmf = NMFRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
 item2vec = Item2VecRecommender(embedding_dim=32, n_epochs=5, seed=0).fit(train)
 fm = FactorizationMachineRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
 svdpp = SVDPlusPlusRecommender(n_factors=16, n_epochs=30, seed=0).fit(train)
+rp3 = RP3betaRecommender(alpha=1.0, beta=0.5, n_neighbors=50).fit(train)
 print(bpr.recommend(user_id=1, k=2, exclude={10, 11}))
 print(ease.recommend(user_id=1, k=2, exclude={10, 11}))
 print(slim.recommend(user_id=1, k=2, exclude={10, 11}))
@@ -210,6 +214,14 @@ writes `examples/output/demo_report.md`.
   Neighbor ties break by ascending user id; score ties break by ascending
   item id. Seen items are dropped, and any shortfall is filled from the
   popularity ranking. The CLI reports this model as `user-knn(cosine)`.
+- RP3beta binarizes interactions and builds item–item weights
+  `W_ij = (P_iu^alpha @ P_ui^alpha)_ij / deg(j)^beta` from the row-stochastic
+  transitions `P_ui = X / deg(u)` and `P_iu = Xᵀ / deg(i)`, zeroes the
+  diagonal, keeps the `n_neighbors` strongest entries per row (all by
+  default), and row-normalizes when `normalize=True`. Users are scored by
+  `x_u @ W`; larger `beta` pushes long-tail items up. Seen items are dropped
+  and any shortfall is filled from the popularity ranking. The CLI reports
+  this model as `rp3beta`.
 
 ## Project layout
 
@@ -219,7 +231,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
-    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM, SVD++
+    baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM, SVD++, RP3beta
     report.py            # markdown rendering
     cli.py               # end-to-end entry point
 tests/                   # pytest suite

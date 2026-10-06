@@ -1608,3 +1608,133 @@ class SVDPlusPlusRecommender:
             key=lambda kv: (-kv[1], kv[0]),
         )
         return [item for item, _ in ranked][:k]
+
+
+class RP3betaRecommender:
+    """Graph random-walk recommender RP3beta (Paudel et al., 2016).
+
+    Treats the binary user–item matrix ``X`` as a bipartite graph and scores
+    items by the probability of a 3-step walk ``user → item → user → item``,
+    with two knobs:
+
+    * ``alpha`` raises every transition probability to a power before
+      composing (``alpha = 1`` is the plain walk; Cooper et al.'s P3alpha).
+    * ``beta`` re-ranks by dividing each target item's walk probability by
+      its popularity ``deg(j) ** beta``, trading a little accuracy on the
+      head for much better long-tail coverage. ``beta = 0`` is P3alpha.
+
+    With ``P_ui = X / deg(u)`` and ``P_iu = Xᵀ / deg(i)``, the item–item
+    weight matrix is
+
+        ``W_ij = (P_iu^α @ P_ui^α)_ij / deg(j)^β``
+
+    with a zero diagonal. Each row keeps its ``n_neighbors`` strongest
+    entries (all of them when ``None``) and, if ``normalize`` is true, is
+    rescaled to sum to one. Users are scored by ``x_u @ W``. Unknown users
+    and any shortfall after removing seen items fall back to the popularity
+    ranking. Score ties break by ascending item id.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        beta: float = 0.5,
+        n_neighbors: Optional[int] = None,
+        normalize: bool = True,
+    ) -> None:
+        alpha = float(alpha)
+        beta = float(beta)
+        if not (alpha > 0.0) or not math.isfinite(alpha):
+            raise ValueError("alpha must be a positive finite number")
+        if not (beta >= 0.0) or not math.isfinite(beta):
+            raise ValueError("beta must be a non-negative finite number")
+        if n_neighbors is not None:
+            if isinstance(n_neighbors, bool) or int(n_neighbors) != n_neighbors:
+                raise ValueError("n_neighbors must be a positive integer or None")
+            n_neighbors = int(n_neighbors)
+            if n_neighbors < 1:
+                raise ValueError("n_neighbors must be a positive integer or None")
+        self.alpha = alpha
+        self.beta = beta
+        self.n_neighbors = n_neighbors
+        self.normalize = bool(normalize)
+        self.catalog_: list = []
+        self.histories_: dict = {}
+        self.item_weights_: Optional[np.ndarray] = None
+        self.item_popularity_: Optional[np.ndarray] = None
+        self._user_index: dict = {}
+        self._user_rows: Optional[np.ndarray] = None
+        self._fallback = PopularityRecommender()
+
+    def fit(self, interactions: pd.DataFrame) -> "RP3betaRecommender":
+        _validate(interactions)
+        self._fallback.fit(interactions)
+        pairs = interactions[["user_id", "item_id"]].drop_duplicates()
+        users = sorted(set(pairs["user_id"].tolist()))
+        self.catalog_ = sorted(set(pairs["item_id"].tolist()))
+        self.histories_ = {
+            user: set(items) for user, items in pairs.groupby("user_id")["item_id"]
+        }
+        self._user_index = {user: idx for idx, user in enumerate(users)}
+        n_users = len(users)
+        n_items = len(self.catalog_)
+        if n_users == 0 or n_items == 0:
+            self.item_weights_ = np.zeros((0, 0))
+            self.item_popularity_ = np.zeros(0)
+            self._user_rows = np.zeros((0, 0))
+            return self
+
+        item_index = {item: idx for idx, item in enumerate(self.catalog_)}
+        X = np.zeros((n_users, n_items), dtype=np.float64)
+        for user, item in zip(pairs["user_id"].tolist(), pairs["item_id"].tolist()):
+            X[self._user_index[user], item_index[item]] = 1.0
+
+        user_deg = X.sum(axis=1)
+        item_deg = X.sum(axis=0)
+        # Every fitted user / item has at least one interaction, so degrees are > 0.
+        p_ui = (X / user_deg[:, None]) ** self.alpha  # user -> item
+        p_iu = (X.T / item_deg[:, None]) ** self.alpha  # item -> user
+        W = p_iu @ p_ui
+        W = W / np.power(item_deg, self.beta)[None, :]
+        np.fill_diagonal(W, 0.0)
+
+        if self.n_neighbors is not None and self.n_neighbors < n_items:
+            keep = self.n_neighbors
+            # Stable sort on (-weight, column index) so ties keep lower item ids.
+            order = np.argsort(-W, axis=1, kind="stable")
+            mask = np.zeros_like(W, dtype=bool)
+            rows = np.arange(n_items)[:, None]
+            mask[rows, order[:, :keep]] = True
+            W = np.where(mask, W, 0.0)
+        if self.normalize:
+            row_sums = W.sum(axis=1, keepdims=True)
+            W = np.divide(W, row_sums, out=np.zeros_like(W), where=row_sums > 0)
+
+        self.item_weights_ = W
+        self.item_popularity_ = item_deg
+        self._user_rows = X
+        return self
+
+    def recommend(self, user_id=None, k: int = 10, exclude=()) -> list:
+        if self.item_weights_ is None or self._user_rows is None:
+            raise RuntimeError("fit must be called before recommend")
+        banned = set(exclude) | self.histories_.get(user_id, set())
+        user_idx = self._user_index.get(user_id)
+        if user_idx is None:
+            return self._fallback.recommend(user_id, k, exclude=banned)
+        scores = self._user_rows[user_idx] @ self.item_weights_
+        ranked = sorted(
+            (
+                (item, float(score))
+                for item, score in zip(self.catalog_, scores)
+                if item not in banned and score > 0.0
+            ),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        recommendations = [item for item, _ in ranked][:k]
+        if len(recommendations) < k:
+            remaining = self._fallback.recommend(
+                user_id, k, exclude=banned | set(recommendations)
+            )
+            recommendations.extend(remaining[: k - len(recommendations)])
+        return recommendations
