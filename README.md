@@ -21,6 +21,13 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   unexpectedness as `1 - p(item)` or cosine distance from a user's primitive
   profile, and serendipity as the mean of relevance × unexpectedness in the
   top-K.
+- **Calibration and popularity bias** — Steck (2018) calibration: the genre
+  distribution of a history or list, `C_KL` miscalibration with the
+  `q~ = (1 - alpha) q + alpha p` smoothing, and a greedy calibrated top-K
+  re-ranker trading `(1 - lambda)` total score against `lambda` `C_KL`.
+  Also popularity-bias measures: the Gini index of item exposure, average
+  recommendation popularity (ARP), and the average long-tail share (APLT)
+  with a configurable head fraction.
 - **Protocols** — chronological leave-one-out and leave-last-N splitting with
   minimum-history filters, plus rating thresholding for explicit feedback.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
@@ -196,6 +203,13 @@ writes `examples/output/demo_report.md`.
   items score `1.0`), weights positions by `1 / log2(rank + 1)`, and divides
   by the sum of those weights through `k`.
 - Unexpectedness is the mean of `1 - p(item)` over recommended entries.
+- Calibration spreads each item's unit mass evenly over its genres. `C_KL`
+  skips genres absent from the history and returns `0.0` for an empty
+  history. `calibrated_rerank` breaks ties toward the earlier candidate.
+- The Gini index counts never-recommended catalog items as zero exposure when
+  `catalog` is passed. The APLT head is the top `ceil(head_fraction * n)`
+  items by training popularity (ties by item id), and unseen items count
+  as long tail.
 - Profile unexpectedness is mean cosine distance from each user's primitive
   profile (the mean history vector), clipped to `[0, 1]`.
 - Serendipity averages `relevant(i) * unexpected(i)` per user; with a cutoff
@@ -229,6 +243,7 @@ writes `examples/output/demo_report.md`.
 src/reco_eval_kit/
     metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate/InversePopularity @K
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
+    calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
     baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM, SVD++, RP3beta
