@@ -40,6 +40,7 @@ from .metrics import (
     recall_at_k,
 )
 from .report import render_report, save_report
+from .significance import paired_comparison, per_user_scores, render_significance_section
 from .splitting import leave_one_out
 from .synthetic import generate_interactions, generate_item_features
 
@@ -63,6 +64,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--output", default="evaluation_report.md")
+    parser.add_argument(
+        "--significance-baseline",
+        default=None,
+        metavar="MODEL",
+        help="add paired randomization tests of NDCG@K for every model against this "
+        "model name (for example 'popularity'), Holm-adjusted",
+    )
+    parser.add_argument(
+        "--significance-resamples",
+        type=int,
+        default=2000,
+        help="sign-flip / bootstrap resamples for --significance-baseline (default: 2000)",
+    )
     return parser
 
 
@@ -102,7 +116,14 @@ def main(argv=None) -> int:
         f"svdpp(seed={args.seed})": SVDPlusPlusRecommender(n_factors=16, n_epochs=20, seed=args.seed),
     }
 
+    if args.significance_baseline is not None and args.significance_baseline not in models:
+        raise SystemExit(
+            f"unknown --significance-baseline {args.significance_baseline!r}; "
+            f"choose one of: {', '.join(models)}"
+        )
+
     results = {}
+    ndcg_by_model = {}
     for name, model in models.items():
         model.fit(train)
         rec_lists = [
@@ -136,6 +157,7 @@ def main(argv=None) -> int:
             k=args.k,
         )
         results[name] = scores
+        ndcg_by_model[name] = per_user_scores(ndcg_at_k, rec_lists, relevant_lists, k=args.k)
 
     summary = {
         "Protocol": "leave-one-out",
@@ -147,6 +169,19 @@ def main(argv=None) -> int:
         "Seed": args.seed,
     }
     markdown = render_report(results, dataset_summary=summary)
+    if args.significance_baseline is not None:
+        base = args.significance_baseline
+        comparisons = {
+            name: paired_comparison(
+                ndcg_by_model[base],
+                scores,
+                n_resamples=args.significance_resamples,
+                seed=args.seed,
+            )
+            for name, scores in ndcg_by_model.items()
+            if name != base
+        }
+        markdown += "\n" + render_significance_section(comparisons, base, f"NDCG@{args.k}")
     output_path = save_report(markdown, args.output)
 
     print(f"evaluated {len(models)} recommenders on {len(test_users)} test users")
