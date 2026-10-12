@@ -28,6 +28,14 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   Also popularity-bias measures: the Gini index of item exposure, average
   recommendation popularity (ARP), and the average long-tail share (APLT)
   with a configurable head fraction.
+- **Paired significance testing** — compare two recommenders on the same
+  users using per-user metric differences: a two-sided sign-flip
+  randomization test with the `(b + 1) / (B + 1)` correction, a paired
+  t-test, a Wilcoxon signed-rank test, a paired-bootstrap CI for the mean
+  difference, the `d_z` effect size, and Holm–Bonferroni adjustment when
+  several models are compared with one baseline. The CLI
+  `--significance-baseline` option appends a table of these results to the
+  report.
 - **Protocols** — chronological leave-one-out and leave-last-N splitting with
   minimum-history filters, plus rating thresholding for explicit feedback.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
@@ -166,6 +174,22 @@ profile_unexpectedness(lists, histories, features)
 serendipity(lists, relevant, item_popularity=popularity)
 ```
 
+### Is model B really better than model A?
+
+```python
+from reco_eval_kit.metrics import ndcg_at_k
+from reco_eval_kit.significance import compare_recommenders, holm_adjust
+
+res = compare_recommenders(ndcg_at_k, lists_a, lists_b, relevant, k=10,
+                           n_resamples=10_000, seed=0)
+print(res.mean_diff, (res.ci_low, res.ci_high), res.randomization_p, res.t_p)
+holm_adjust([res.randomization_p, other.randomization_p])
+```
+
+```bash
+reco-eval-kit --significance-baseline popularity --output report.md
+```
+
 ### End-to-end CLI
 
 ```bash
@@ -244,6 +268,7 @@ src/reco_eval_kit/
     metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate/InversePopularity @K
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
+    significance.py      # paired randomization / t / Wilcoxon tests, bootstrap CI, Holm
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
     baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM, SVD++, RP3beta
