@@ -9,7 +9,7 @@ and a small CLI that ties the whole loop together and writes a markdown report.
 ## Features
 
 - **Ranking metrics** — Precision@K, Recall@K, MAP@K, NDCG@K, MRR, HitRate@K,
-  and InversePopularity@K. Binary or graded relevance per user; NDCG
+  InversePopularity@K, Expected Reciprocal Rank (ERR@K), and Rank-Biased Precision (RBP@K). Binary or graded relevance per user; NDCG
   normalizes against an ideal DCG built from *all* relevant items (so short
   lists and missed hits are handled correctly); MAP@K caps its normalizer at
   K; duplicate recommendations raise. InversePopularity@K is rank-aware

@@ -191,6 +191,92 @@ def inverse_popularity_at_k(
     return numerator / denominator
 
 
+
+def _max_gain(relevant: RelevanceSpec) -> float:
+    """Largest relevance gain; used to scale ERR stopping probabilities."""
+    if isinstance(relevant, Mapping):
+        gains = [float(v) for v in relevant.values() if float(v) > 0]
+        return max(gains) if gains else 0.0
+    return 1.0 if relevant else 0.0
+
+
+def _err_relevance_prob(gain: float, max_gain: float) -> float:
+    """Map a graded gain onto the ERR stopping probability in ``[0, 1]``.
+
+    Uses Chapelle et al.'s ``(2^g - 1) / 2^{g_max}``. Binary relevance with
+    unit gains therefore yields ``p = 0.5`` for a hit. A zero max gain yields
+    zero probability.
+    """
+    if gain <= 0.0 or max_gain <= 0.0:
+        return 0.0
+    # Cap gain at max_gain so a list gain cannot exceed the catalogue max.
+    g = min(float(gain), float(max_gain))
+    return (2.0 ** g - 1.0) / (2.0 ** max_gain)
+
+
+def err_at_k(recommended: Sequence, relevant: RelevanceSpec, k: int) -> float:
+    """Expected Reciprocal Rank at k (Chapelle, Metlzer, Zhang, Grinspan 2009).
+
+    Models a cascade user who examines the list top-down and stops at the
+    first satisfying document. With stopping probability ``R_i`` at rank
+    ``i`` (derived from the graded gain),
+
+        ERR@K = sum_{i=1..K} (1/i) * R_i * prod_{j<i} (1 - R_j)
+
+    Binary relevance uses unit gains, so a hit has ``R = 1/2``. Returns 0.0
+    when no relevant item carries positive gain.
+    """
+    _check_k(k)
+    items = _validate_recommended(recommended)
+    max_gain = _max_gain(relevant)
+    if max_gain <= 0.0:
+        return 0.0
+    p_continue = 1.0
+    score = 0.0
+    for rank, item in enumerate(items[:k], start=1):
+        r = _err_relevance_prob(_gain(item, relevant), max_gain)
+        score += (1.0 / rank) * r * p_continue
+        p_continue *= 1.0 - r
+        if p_continue <= 0.0:
+            break
+    return score
+
+
+def rbp_at_k(
+    recommended: Sequence,
+    relevant: RelevanceSpec,
+    k: int,
+    persistence: float = 0.8,
+) -> float:
+    """Rank-Biased Precision at k (Moffat & Zobel, 2008).
+
+    A user examines the list top-down and continues to the next rank with
+    persistence ``p`` (default 0.8). With binary or graded relevance
+    ``r_i = gain_i / max_gain`` (so binary hits score 1),
+
+        RBP@K = (1 - p) * sum_{i=1..K} r_i * p^{i-1}
+
+    The unfinished tail beyond K is ignored (residual omitted). ``persistence``
+    must lie in ``[0, 1)``. Returns 0.0 when no relevant item has positive gain.
+    """
+    _check_k(k)
+    if not (0.0 <= float(persistence) < 1.0):
+        raise ValueError("persistence must lie in [0, 1)")
+    items = _validate_recommended(recommended)
+    max_gain = _max_gain(relevant)
+    if max_gain <= 0.0:
+        return 0.0
+    p = float(persistence)
+    score = 0.0
+    weight = 1.0
+    for item in items[:k]:
+        rel = _gain(item, relevant) / max_gain
+        if rel > 0.0:
+            score += rel * weight
+        weight *= p
+    return (1.0 - p) * score
+
+
 MetricCallable = Callable[..., float]
 
 

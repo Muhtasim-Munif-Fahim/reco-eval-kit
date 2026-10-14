@@ -161,3 +161,39 @@ def test_mean_inverse_popularity_averages_users():
 
 def test_mean_inverse_popularity_empty_evaluation_is_zero():
     assert mean_inverse_popularity_at_k([], {1: 1}, k=1) == 0.0
+
+from reco_eval_kit.metrics import err_at_k, rbp_at_k
+
+
+def test_err_first_hit_is_half():
+    # Binary unit gain -> R=0.5 at rank 1: ERR = 1 * 0.5 = 0.5
+    assert err_at_k([1, 2, 3], {1}, k=3) == pytest.approx(0.5)
+
+
+def test_err_later_hit_is_discounted():
+    # Miss, then hit: ERR = (1/2) * 0.5 * (1 - 0) = 0.25
+    assert err_at_k([9, 1, 8], {1}, k=3) == pytest.approx(0.25)
+
+
+def test_err_graded_gain_uses_max():
+    # g=2 with gmax=2 -> R = (4-1)/4 = 0.75 at rank 1
+    assert err_at_k(["a", "b"], {"a": 2.0, "c": 1.0}, k=2) == pytest.approx(0.75)
+
+
+def test_err_empty_relevant_is_zero():
+    assert err_at_k([1, 2], {}, k=2) == 0.0
+
+
+def test_rbp_perfect_top_hit():
+    # (1-0.8) * 1 * 0.8^0 = 0.2
+    assert rbp_at_k([1, 2, 3], {1}, k=3, persistence=0.8) == pytest.approx(0.2)
+
+
+def test_rbp_second_rank_hit():
+    # (1-0.8) * 1 * 0.8 = 0.16
+    assert rbp_at_k([9, 1], {1}, k=2, persistence=0.8) == pytest.approx(0.16)
+
+
+def test_rbp_rejects_bad_persistence():
+    with pytest.raises(ValueError, match="persistence"):
+        rbp_at_k([1], {1}, k=1, persistence=1.0)

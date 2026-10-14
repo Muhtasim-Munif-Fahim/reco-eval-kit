@@ -31,6 +31,8 @@ from .beyond_accuracy import (
 )
 from .metrics import (
     average_precision_at_k,
+    err_at_k,
+    rbp_at_k,
     hit_rate_at_k,
     mean_inverse_popularity_at_k,
     mean_metric,
@@ -49,6 +51,8 @@ CUTOFF_METRICS = (
     ("Recall@K", recall_at_k),
     ("MAP@K", average_precision_at_k),
     ("NDCG@K", ndcg_at_k),
+    ("ERR@K", err_at_k),
+    ("RBP@K", rbp_at_k),
     ("HitRate@K", hit_rate_at_k),
 )
 
