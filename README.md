@@ -36,6 +36,11 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   several models are compared with one baseline. The CLI
   `--significance-baseline` option appends a table of these results to the
   report.
+- **Unbiased (propensity-weighted) metrics** — naive, IPS and SNIPS
+  estimates of Recall@K / DCG@K / RR@K for missing-not-at-random implicit
+  feedback (Yang et al., RecSys 2018), with power-law popularity
+  propensities `p ∝ n^((γ+1)/2)`, clipping, and Kish effective sample size.
+  The CLI `--propensity-gamma` option adds SNIPS-Recall@K and SNIPS-NDCG@K.
 - **Protocols** — chronological leave-one-out and leave-last-N splitting with
   minimum-history filters, plus rating thresholding for explicit feedback.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
@@ -190,6 +195,28 @@ holm_adjust([res.randomization_p, other.randomization_p])
 reco-eval-kit --significance-baseline popularity --output report.md
 ```
 
+### Unbiased evaluation under popularity bias
+
+Held-out positives over-represent popular items (users only interact with
+what they are shown), so naive Recall@K flatters popularity-heavy models.
+Inverse propensity scoring reweights each observed positive by `1 / p_i`:
+
+```python
+from reco_eval_kit.unbiased import mean_unbiased_metric_at_k, power_law_propensities
+
+props = power_law_propensities(train_item_counts, gamma=0.5, min_propensity=1e-3)
+est = mean_unbiased_metric_at_k(rec_lists, test_positive_lists, props, k=10, gain="hit")
+est.naive, est.ips, est.snips, est.effective_sample_size
+```
+
+SNIPS normalizes across users (so it is not cancelled out under
+leave-one-out, where each user has a single positive). `gain="dcg"` and
+`"rr"` give unbiased DCG@K and reciprocal-rank variants.
+
+```bash
+reco-eval-kit --propensity-gamma 0.5 --output report.md
+```
+
 ### End-to-end CLI
 
 ```bash
@@ -268,6 +295,7 @@ src/reco_eval_kit/
     metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate/InversePopularity @K
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
+    unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
     significance.py      # paired randomization / t / Wilcoxon tests, bootstrap CI, Holm
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
