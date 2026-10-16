@@ -44,6 +44,7 @@ from .metrics import (
 from .report import render_report, save_report
 from .significance import paired_comparison, per_user_scores, render_significance_section
 from .splitting import leave_one_out
+from .unbiased import mean_unbiased_metric_at_k, power_law_propensities
 from .synthetic import generate_interactions, generate_item_features
 
 CUTOFF_METRICS = (
@@ -80,6 +81,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=2000,
         help="sign-flip / bootstrap resamples for --significance-baseline (default: 2000)",
+    )
+    parser.add_argument(
+        "--propensity-gamma",
+        type=float,
+        default=None,
+        metavar="GAMMA",
+        help="add SNIPS-Recall@K / SNIPS-NDCG@K with power-law popularity "
+        "propensities p ~ n**((gamma+1)/2) (Yang et al. 2018); for example 0.5",
     )
     return parser
 
@@ -126,6 +135,11 @@ def main(argv=None) -> int:
             f"choose one of: {', '.join(models)}"
         )
 
+    propensities = None
+    if args.propensity_gamma is not None:
+        propensities = power_law_propensities(popularity_counts, gamma=args.propensity_gamma)
+        floor = min(propensities.values()) if propensities else 1e-3
+
     results = {}
     ndcg_by_model = {}
     for name, model in models.items():
@@ -160,6 +174,16 @@ def main(argv=None) -> int:
             item_features=item_features,
             k=args.k,
         )
+        if propensities is not None:
+            for label, gain in (("SNIPS-Recall@K", "hit"), ("SNIPS-NDCG@K", "dcg")):
+                scores[label] = mean_unbiased_metric_at_k(
+                    rec_lists,
+                    relevant_lists,
+                    propensities,
+                    args.k,
+                    gain=gain,
+                    default_propensity=floor,
+                ).snips
         results[name] = scores
         ndcg_by_model[name] = per_user_scores(ndcg_at_k, rec_lists, relevant_lists, k=args.k)
 
@@ -172,6 +196,8 @@ def main(argv=None) -> int:
         "Cutoff k": args.k,
         "Seed": args.seed,
     }
+    if args.propensity_gamma is not None:
+        summary["Propensity model"] = f"power law, gamma={args.propensity_gamma:g}"
     markdown = render_report(results, dataset_summary=summary)
     if args.significance_baseline is not None:
         base = args.significance_baseline
