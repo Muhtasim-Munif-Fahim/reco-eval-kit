@@ -41,6 +41,7 @@ from .metrics import (
     precision_at_k,
     recall_at_k,
 )
+from .diversify import dpp_rerank, mmr_rerank, rank_scores
 from .report import render_report, save_report
 from .significance import paired_comparison, per_user_scores, render_significance_section
 from .splitting import leave_one_out
@@ -90,11 +91,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="add SNIPS-Recall@K / SNIPS-NDCG@K with power-law popularity "
         "propensities p ~ n**((gamma+1)/2) (Yang et al. 2018); for example 0.5",
     )
+    parser.add_argument(
+        "--diversify",
+        choices=("mmr", "dpp"),
+        default=None,
+        help="also evaluate every model re-ranked for diversity: MMR (Carbonell & "
+        "Goldstein 1998) or greedy DPP MAP (Chen et al. 2018) over its top "
+        "--diversify-pool * k candidates, using item-feature cosine similarity",
+    )
+    parser.add_argument(
+        "--diversify-lambda",
+        type=float,
+        default=0.7,
+        help="relevance weight: MMR lambda in [0, 1] or DPP theta in [0, 1) (default: 0.7)",
+    )
+    parser.add_argument(
+        "--diversify-pool",
+        type=int,
+        default=3,
+        help="candidate pool size as a multiple of k for --diversify (default: 3)",
+    )
     return parser
 
 
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.diversify is not None:
+        upper = 1.0 if args.diversify == "mmr" else 1.0 - 1e-9
+        if not 0.0 <= args.diversify_lambda <= upper:
+            parser.error("--diversify-lambda must be in [0, 1] for mmr and [0, 1) for dpp")
+        if args.diversify_pool < 1:
+            parser.error("--diversify-pool must be >= 1")
 
     interactions = generate_interactions(
         n_users=args.n_users,
@@ -140,15 +168,8 @@ def main(argv=None) -> int:
         propensities = power_law_propensities(popularity_counts, gamma=args.propensity_gamma)
         floor = min(propensities.values()) if propensities else 1e-3
 
-    results = {}
-    ndcg_by_model = {}
-    for name, model in models.items():
-        model.fit(train)
-        rec_lists = [
-            model.recommend(user, k=args.k, exclude=history)
-            for user, history in zip(test_users, history_lists)
-        ]
-
+    def score_lists(rec_lists):
+        """Every report metric for one set of per-user recommendation lists."""
         scores = {
             label: mean_metric(metric, rec_lists, relevant_lists, k=args.k)
             for label, metric in CUTOFF_METRICS
@@ -184,8 +205,36 @@ def main(argv=None) -> int:
                     gain=gain,
                     default_propensity=floor,
                 ).snips
-        results[name] = scores
+        return scores
+
+    results = {}
+    ndcg_by_model = {}
+    for name, model in models.items():
+        model.fit(train)
+        rec_lists = [
+            model.recommend(user, k=args.k, exclude=history)
+            for user, history in zip(test_users, history_lists)
+        ]
+        results[name] = score_lists(rec_lists)
         ndcg_by_model[name] = per_user_scores(ndcg_at_k, rec_lists, relevant_lists, k=args.k)
+        if args.diversify is not None:
+            pool = args.k * args.diversify_pool
+            rerank = mmr_rerank if args.diversify == "mmr" else dpp_rerank
+            reranked = []
+            for user, history in zip(test_users, history_lists):
+                cands = model.recommend(user, k=pool, exclude=history)
+                reranked.append(
+                    rerank(
+                        cands,
+                        rank_scores(len(cands)),
+                        args.k,
+                        args.diversify_lambda,
+                        item_features=item_features,
+                    )
+                )
+            div_name = f"{name}+{args.diversify}"
+            results[div_name] = score_lists(reranked)
+            ndcg_by_model[div_name] = per_user_scores(ndcg_at_k, reranked, relevant_lists, k=args.k)
 
     summary = {
         "Protocol": "leave-one-out",
@@ -198,6 +247,11 @@ def main(argv=None) -> int:
     }
     if args.propensity_gamma is not None:
         summary["Propensity model"] = f"power law, gamma={args.propensity_gamma:g}"
+    if args.diversify is not None:
+        summary["Diversification"] = (
+            f"{args.diversify}, lambda={args.diversify_lambda:g}, "
+            f"pool={args.diversify_pool}xk"
+        )
     markdown = render_report(results, dataset_summary=summary)
     if args.significance_baseline is not None:
         base = args.significance_baseline
