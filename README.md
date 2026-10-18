@@ -28,6 +28,17 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   Also popularity-bias measures: the Gini index of item exposure, average
   recommendation popularity (ARP), and the average long-tail share (APLT)
   with a configurable head fraction.
+- **Diversity re-ranking** — Maximal Marginal Relevance (Carbonell &
+  Goldstein, 1998) and greedy DPP MAP inference with fast incremental
+  Cholesky updates (Chen, Zhang & Zhou, NeurIPS 2018) over a candidate list,
+  using item-feature cosine similarity or any precomputed similarity matrix.
+  `mmr_rerank(cands, scores, k, lam=0.7, item_features=F)` maximizes
+  `lam * rel - (1 - lam) * max sim to chosen`; `dpp_rerank(..., theta=0.7)`
+  uses the kernel `diag(q) S diag(q)` with `q = exp(theta / (2(1-theta)) rel)`.
+  The CLI's `--diversify mmr|dpp --diversify-lambda 0.7 --diversify-pool 3`
+  adds a `<model>+mmr` / `<model>+dpp` row per model, re-ranking its top
+  `pool * k` candidates, so the accuracy vs. intra-list-diversity trade-off
+  is visible in one report.
 - **Paired significance testing** — compare two recommenders on the same
   users using per-user metric differences: a two-sided sign-flip
   randomization test with the `(b + 1) / (B + 1)` correction, a paired
@@ -257,6 +268,11 @@ writes `examples/output/demo_report.md`.
 - Calibration spreads each item's unit mass evenly over its genres. `C_KL`
   skips genres absent from the history and returns `0.0` for an empty
   history. `calibrated_rerank` breaks ties toward the earlier candidate.
+- `mmr_rerank` / `dpp_rerank` min-max normalize scores to `[0, 1]` by
+  default (`normalize=False` to keep raw scores) and break ties toward the
+  earlier candidate. In the CLI, candidates carry rank-derived scores
+  `1 - r / n`. When no remaining item adds DPP volume (exact duplicates of
+  chosen items), `dpp_rerank` completes the list in relevance order.
 - The Gini index counts never-recommended catalog items as zero exposure when
   `catalog` is passed. The APLT head is the top `ceil(head_fraction * n)`
   items by training popularity (ties by item id), and unseen items count
@@ -295,6 +311,7 @@ src/reco_eval_kit/
     metrics.py           # Precision/Recall/MAP/NDCG/MRR/HitRate/InversePopularity @K
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
+    diversify.py         # MMR and greedy-DPP diversity re-ranking
     unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
     significance.py      # paired randomization / t / Wilcoxon tests, bootstrap CI, Holm
     splitting.py         # leave-one-out, leave-last-N, thresholding
