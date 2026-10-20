@@ -52,6 +52,9 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   feedback (Yang et al., RecSys 2018), with power-law popularity
   propensities `p ∝ n^((γ+1)/2)`, clipping, and Kish effective sample size.
   The CLI `--propensity-gamma` option adds SNIPS-Recall@K and SNIPS-NDCG@K.
+- **Sampled-metric correction** — the sampled-negatives protocol (rank the held-out item
+  among `m` random unseen items), with Krichene & Rendle (KDD 2020) hypergeometric
+  bias-variance correction to full-catalog HR@K / NDCG@K (`--sampled-negatives`).
 - **Protocols** — chronological leave-one-out and leave-last-N splitting with
   minimum-history filters, plus rating thresholding for explicit feedback.
 - **Baselines** — popularity ranking (ties broken by item id), seeded random,
@@ -226,6 +229,37 @@ leave-one-out, where each user has a single positive). `gain="dcg"` and
 
 ```bash
 reco-eval-kit --propensity-gamma 0.5 --output report.md
+```
+
+### Sampled metrics and their correction
+
+A common shortcut ranks each held-out item against `m` random negatives, say 100,
+instead of the whole catalog. Krichene & Rendle ("On Sampled Metrics for
+Item Recommendation", KDD 2020) showed that HR@K and NDCG@K computed this way
+are biased, often several times too high, and can even reverse the order of
+two models.
+
+When negatives are sampled without replacement, the sampled rank is
+`r | R ~ Hypergeometric(n, R, m)`, where `R` is the full rank. Using that
+distribution, `correction_weights` solves for a per-sampled-rank value
+`f(r)` with `E[f(r) | R] ≈ M(R)`. The default `method="bv"` adds their
+variance penalty `gamma * E[f(r)^2]`. Plain least squares (`"ls"`) is exact
+without sampling but badly conditioned when `m << n`.
+
+```python
+from reco_eval_kit.sampled import corrected_sampled_metric, full_rank, sample_negative_ranks
+
+r = full_rank(model_ranking, positive, sampled_negatives + [positive])   # per user
+est = corrected_sampled_metric(ranks, n_negatives, 100, metric="ndcg", k=10, gamma=0.01)
+est.naive, est.corrected
+```
+
+`n_negatives` can be a single shared count or one per user, for example the
+catalog size minus each user's history. `expected_sampled_metric(full_ranks, n, m)`
+shows how much the naive protocol inflates a known set of full ranks.
+
+```bash
+reco-eval-kit --sampled-negatives 100 --output report.md   # adds Sampled-/Corrected-HR@K and NDCG@K
 ```
 
 ### End-to-end CLI

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 
+import numpy as np
+
 from .baselines import (
     BPRRecommender,
     ItemItemCooccurrenceRecommender,
@@ -45,6 +47,7 @@ from .diversify import dpp_rerank, mmr_rerank, rank_scores
 from .report import render_report, save_report
 from .significance import paired_comparison, per_user_scores, render_significance_section
 from .splitting import leave_one_out
+from .sampled import corrected_sampled_metric, full_rank
 from .unbiased import mean_unbiased_metric_at_k, power_law_propensities
 from .synthetic import generate_interactions, generate_item_features
 
@@ -111,7 +114,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="candidate pool size as a multiple of k for --diversify (default: 3)",
     )
+    parser.add_argument(
+        "--sampled-negatives",
+        type=int,
+        default=None,
+        metavar="M",
+        help="also report the common sampled protocol (rank the held-out item among M "
+        "random unseen items) and its Krichene & Rendle (2020) bias-corrected "
+        "estimates of the full-catalog HitRate@K / NDCG@K; for example 100",
+    )
+    parser.add_argument(
+        "--sampled-gamma",
+        type=float,
+        default=0.01,
+        help="variance penalty of the bias-variance correction (default: 0.01)",
+    )
     return parser
+
+
+def _sampled_columns(model, test_users, history_lists, relevant_lists, n_items, m, k, gamma, rng):
+    """Naive and corrected sampled HitRate@K / NDCG@K for one fitted model."""
+    ranks, n_neg = [], []
+    catalog = range(n_items)
+    for user, history, relevant in zip(test_users, history_lists, relevant_lists):
+        positive = next(iter(relevant))
+        pool = [i for i in catalog if i not in history and i != positive]
+        if len(pool) < m:
+            raise SystemExit(f"--sampled-negatives {m} exceeds the {len(pool)} unseen items of a user")
+        sampled = rng.choice(pool, size=m, replace=False).tolist()
+        ranking = model.recommend(user, k=n_items, exclude=history)
+        ranks.append(full_rank(ranking, positive, sampled + [positive]))
+        n_neg.append(len(pool))
+    out = {}
+    for label, metric in (("HR", "hit"), ("NDCG", "ndcg")):
+        est = corrected_sampled_metric(ranks, n_neg, m, metric, k, method="bv", gamma=gamma)
+        out[f"Sampled-{label}@K"] = est.naive
+        out[f"Corrected-{label}@K"] = est.corrected
+    return out
 
 
 def main(argv=None) -> int:
@@ -123,6 +162,10 @@ def main(argv=None) -> int:
             parser.error("--diversify-lambda must be in [0, 1] for mmr and [0, 1) for dpp")
         if args.diversify_pool < 1:
             parser.error("--diversify-pool must be >= 1")
+    if args.sampled_negatives is not None and args.sampled_negatives < 1:
+        parser.error("--sampled-negatives must be >= 1")
+    if args.sampled_gamma < 0:
+        parser.error("--sampled-gamma must be >= 0")
 
     interactions = generate_interactions(
         n_users=args.n_users,
@@ -216,6 +259,14 @@ def main(argv=None) -> int:
             for user, history in zip(test_users, history_lists)
         ]
         results[name] = score_lists(rec_lists)
+        if args.sampled_negatives is not None:
+            results[name].update(
+                _sampled_columns(
+                    model, test_users, history_lists, relevant_lists, args.n_items,
+                    args.sampled_negatives, args.k, args.sampled_gamma,
+                    np.random.default_rng(args.seed + 7),
+                )
+            )
         ndcg_by_model[name] = per_user_scores(ndcg_at_k, rec_lists, relevant_lists, k=args.k)
         if args.diversify is not None:
             pool = args.k * args.diversify_pool
@@ -247,6 +298,10 @@ def main(argv=None) -> int:
     }
     if args.propensity_gamma is not None:
         summary["Propensity model"] = f"power law, gamma={args.propensity_gamma:g}"
+    if args.sampled_negatives is not None:
+        summary["Sampled protocol"] = (
+            f"{args.sampled_negatives} negatives, bias-variance correction gamma={args.sampled_gamma:g}"
+        )
     if args.diversify is not None:
         summary["Diversification"] = (
             f"{args.diversify}, lambda={args.diversify_lambda:g}, "
