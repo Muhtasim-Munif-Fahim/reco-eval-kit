@@ -129,6 +129,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.01,
         help="variance penalty of the bias-variance correction (default: 0.01)",
     )
+    parser.add_argument(
+        "--user-groups",
+        choices=("advantaged", "quantile", "cold-start"),
+        default=None,
+        help="add a user-group fairness section for NDCG@K: Li et al. (2021) top-5%% "
+        "advantaged vs rest, activity quantiles, or cold-start vs warm users",
+    )
+    parser.add_argument(
+        "--user-groups-top",
+        type=float,
+        default=0.05,
+        help="advantaged fraction for --user-groups advantaged (default: 0.05)",
+    )
+    parser.add_argument(
+        "--user-groups-n",
+        type=int,
+        default=3,
+        help="number of buckets for --user-groups quantile; max interactions for cold-start (default: 3)",
+    )
     return parser
 
 
@@ -321,6 +340,27 @@ def main(argv=None) -> int:
             if name != base
         }
         markdown += "\n" + render_significance_section(comparisons, base, f"NDCG@{args.k}")
+    if args.user_groups is not None:
+        from .user_groups import (
+            activity_groups,
+            cold_start_groups,
+            compare_group_fairness,
+            render_group_fairness_section,
+        )
+
+        if args.user_groups == "cold-start":
+            group_map = cold_start_groups(train, test_users, max_interactions=args.user_groups_n)
+        elif args.user_groups == "quantile":
+            group_map = activity_groups(train, test_users, method="quantile", n_groups=args.user_groups_n)
+        else:
+            group_map = activity_groups(train, test_users, top_fraction=args.user_groups_top)
+        labels = [group_map[user] for user in test_users]
+        if len(set(labels)) < 2:
+            raise SystemExit("--user-groups produced a single group; adjust its threshold")
+        fairness = compare_group_fairness(ndcg_by_model, labels, n_permutations=1000, seed=args.seed)
+        markdown += "\n" + render_group_fairness_section(fairness, f"NDCG@{args.k}", args.user_groups)
+        worst = max(fairness.items(), key=lambda kv: kv[1].gap)
+        print(f"largest user-group NDCG gap: {worst[0]} ({worst[1].best_group} - {worst[1].worst_group} = {worst[1].gap:.4f})")
     output_path = save_report(markdown, args.output)
 
     print(f"evaluated {len(models)} recommenders on {len(test_users)} test users")
