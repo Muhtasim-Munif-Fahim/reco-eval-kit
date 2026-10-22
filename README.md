@@ -21,6 +21,7 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   unexpectedness as `1 - p(item)` or cosine distance from a user's primitive
   profile, and serendipity as the mean of relevance × unexpectedness in the
   top-K.
+- **User-group fairness**: segments users by activity (Li et al. 2021: the top 5% "advantaged" vs the rest), by activity quantiles, or by cold-start vs warm. For each segment it reports per-group metric means with CIs, the UGF gap, the min/max ratio, the CV and the Gini of group means, a label-permutation test, and Welch's t or Kruskal–Wallis.
 - **Calibration and popularity bias** — Steck (2018) calibration: the genre
   distribution of a history or list, `C_KL` miscalibration with the
   `q~ = (1 - alpha) q + alpha p` smoothing, and a greedy calibrated top-K
@@ -209,6 +210,28 @@ holm_adjust([res.randomization_p, other.randomization_p])
 reco-eval-kit --significance-baseline popularity --output report.md
 ```
 
+### Who does the model serve? (user-group fairness)
+
+A higher mean NDCG can hide a widening gap between heavy users and light users. Li et al. ("User-oriented Fairness in Recommendation", WWW 2021) found that recommenders serve their top 5% most active users much better on every dataset they examined.
+
+```python
+from reco_eval_kit.significance import per_user_scores
+from reco_eval_kit.user_groups import activity_groups, cold_start_groups, group_fairness_report
+
+groups = activity_groups(train, test_users, method="advantaged", top_fraction=0.05)
+# or activity_groups(train, test_users, method="quantile", n_groups=3) / cold_start_groups(train, test_users, 5)
+scores = per_user_scores(ndcg_at_k, rec_lists, relevant_lists, k=10)
+rep = group_fairness_report(scores, [groups[u] for u in test_users], seed=0)
+rep.groups["advantaged"]["mean"], rep.gap, rep.ratio, rep.permutation_p
+rep.to_frame()      # n_users / mean / se / CI per group
+```
+
+The permutation test shuffles group labels and compares the best-minus-worst gap, so it works with any number of groups. `compare_group_fairness` and `render_group_fairness_section` audit every model on the same users.
+
+```bash
+reco-eval-kit --user-groups advantaged --output report.md     # also: quantile, cold-start
+```
+
 ### Unbiased evaluation under popularity bias
 
 Held-out positives over-represent popular items (users only interact with
@@ -348,6 +371,7 @@ src/reco_eval_kit/
     diversify.py         # MMR and greedy-DPP diversity re-ranking
     unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
     significance.py      # paired randomization / t / Wilcoxon tests, bootstrap CI, Holm
+    user_groups.py       # activity / cold-start user segments and group-fairness audits
     splitting.py         # leave-one-out, leave-last-N, thresholding
     synthetic.py         # seeded interactions and item features
     baselines.py         # popularity, random, co-occurrence, ItemKNN, UserKNN, BPR-MF, PureSVD, WRMF, EASE, SLIM, NMF, Item2Vec, FM, SVD++, RP3beta
