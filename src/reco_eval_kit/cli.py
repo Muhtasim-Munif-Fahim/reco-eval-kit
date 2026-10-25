@@ -148,6 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="number of buckets for --user-groups quantile; max interactions for cold-start (default: 3)",
     )
+    parser.add_argument(
+        "--rank-similarity",
+        type=float,
+        default=None,
+        metavar="P",
+        help="add a model-by-model rank-biased overlap (Webber et al. 2010) matrix of the "
+        "top-k lists with persistence P in (0, 1); for example 0.9",
+    )
     return parser
 
 
@@ -269,8 +277,12 @@ def main(argv=None) -> int:
                 ).snips
         return scores
 
+    if args.rank_similarity is not None and not 0.0 < args.rank_similarity < 1.0:
+        raise SystemExit("--rank-similarity must be in (0, 1)")
+
     results = {}
     ndcg_by_model = {}
+    lists_by_model = {}
     for name, model in models.items():
         model.fit(train)
         rec_lists = [
@@ -278,6 +290,7 @@ def main(argv=None) -> int:
             for user, history in zip(test_users, history_lists)
         ]
         results[name] = score_lists(rec_lists)
+        lists_by_model[name] = rec_lists
         if args.sampled_negatives is not None:
             results[name].update(
                 _sampled_columns(
@@ -361,6 +374,11 @@ def main(argv=None) -> int:
         markdown += "\n" + render_group_fairness_section(fairness, f"NDCG@{args.k}", args.user_groups)
         worst = max(fairness.items(), key=lambda kv: kv[1].gap)
         print(f"largest user-group NDCG gap: {worst[0]} ({worst[1].best_group} - {worst[1].worst_group} = {worst[1].gap:.4f})")
+    if args.rank_similarity is not None:
+        from .rank_similarity import pairwise_rank_similarity, render_rank_similarity_section
+
+        matrix = pairwise_rank_similarity(lists_by_model, k=args.k, p=args.rank_similarity)
+        markdown += "\n" + render_rank_similarity_section(matrix, args.k, args.rank_similarity)
     output_path = save_report(markdown, args.output)
 
     print(f"evaluated {len(models)} recommenders on {len(test_users)} test users")

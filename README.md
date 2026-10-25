@@ -310,6 +310,26 @@ python examples/run_demo.py
 
 writes `examples/output/demo_report.md`.
 
+## Ranking similarity between models
+
+`reco_eval_kit.rank_similarity` compares two recommenders' lists with each other instead of with held-out items. Use it to check whether a new model really changes what users see, or how stable a model is across seeds and retrains.
+
+- `rank_biased_overlap(s, t, p=0.9, k=None)` computes Rank-Biased Overlap (Webber, Moffat & Zobel, TOIS 2010). It returns `RBOResult(min, res, ext, depth)`:
+  - `ext` is the extrapolated point estimate (eq. 32, which also handles uneven lengths).
+  - `[min, min + res]` brackets the RBO of the full, unseen rankings.
+- `jaccard_at_k` and `overlap_at_k` give the set agreement of the two top-k lists.
+- `kendall_tau_topk_distance(s, t, k, penalty=0.5)` is the normalised Fagin–Kumar–Sivakumar `K^(p)` distance between top-k lists: 0 means identical and 1 means disjoint.
+- `compare_rankings(lists_a, lists_b, k, p)` averages every one of these over users.
+- `pairwise_rank_similarity(lists_by_model, k, p, metric="RBO_ext")` builds a model-by-model matrix.
+
+```python
+from reco_eval_kit.rank_similarity import rank_biased_overlap
+r = rank_biased_overlap(["a", "b", "c", "d"], ["b", "a", "c", "e"], p=0.9)
+r.min, r.ext, r.max
+```
+
+From the CLI, `reco-eval-kit --rank-similarity 0.9` adds a model-by-model RBO@K matrix section to the report, followed by the three most similar pairs.
+
 ## Metric conventions
 
 - Precision@K divides by the cutoff `k`, even when fewer items are recommended.
