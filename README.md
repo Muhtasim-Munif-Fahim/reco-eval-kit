@@ -330,6 +330,36 @@ r.min, r.ext, r.max
 
 From the CLI, `reco-eval-kit --rank-similarity 0.9` adds a model-by-model RBO@K matrix section to the report, followed by the three most similar pairs.
 
+## Expected exposure of stochastic rankings
+
+`reco_eval_kit.exposure` implements expected exposure (Diaz, Mitra, Ekstrand,
+Biega & Carterette, "Evaluating Stochastic Rankings with Expected Exposure",
+CIKM 2020). It scores a ranking *policy*, meaning a distribution over rankings,
+by how much RBP attention (`gamma ** (rank - 1)`) each item gets on average.
+That attention is compared with an ideal policy that shuffles equally relevant
+items, so they get equal exposure:
+
+```python
+from reco_eval_kit.exposure import expected_exposure, plackett_luce_rankings
+
+cands = ["a", "b", "c", "d", "e"]
+scores = [2.0, 1.8, 1.0, 0.5, 0.1]
+policy = plackett_luce_rankings(cands, scores, n_samples=500, temperature=0.5, k=3, seed=0)
+ee = expected_exposure(policy, relevant={"a", "b"}, gamma=0.5, k=3, n_candidates=20)
+ee.loss, ee.disparity, ee.relevance, ee.normalized_relevance
+```
+
+* `EE-L = ||eps - eps*||^2`: distance to the ideal exposure (lower is better).
+* `EE-D = ||eps||^2`: disparity, i.e. how concentrated attention is (lower is fairer).
+* `EE-R = 2 eps . eps*`: attention on relevant items (higher is better).
+  `normalized_relevance` divides it by the ideal policy's value.
+
+To trace a model's relevance/disparity trade-off, sweep the Plackett-Luce
+temperature (`0` gives the deterministic ranking). In the CLI,
+`--expected-exposure T` adds `EE-L`/`EE-D`/`EE-R`/`EE-R/ideal` columns for every
+model. Each model gets a Plackett-Luce policy over its top-3k candidates, and
+you can tune it with `--exposure-gamma` and `--exposure-samples`.
+
 ## Metric conventions
 
 - Precision@K divides by the cutoff `k`, even when fewer items are recommended.

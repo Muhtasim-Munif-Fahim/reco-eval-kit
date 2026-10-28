@@ -156,6 +156,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="add a model-by-model rank-biased overlap (Webber et al. 2010) matrix of the "
         "top-k lists with persistence P in (0, 1); for example 0.9",
     )
+    parser.add_argument(
+        "--expected-exposure",
+        type=float,
+        default=None,
+        metavar="T",
+        help="add expected-exposure columns (Diaz et al. 2020: EE-L, EE-D, EE-R, EE-R/ideal) for a "
+        "Plackett-Luce stochastic policy over each model's top-(3k) candidates at temperature T "
+        "(0 = the deterministic ranking)",
+    )
+    parser.add_argument(
+        "--exposure-gamma",
+        type=float,
+        default=0.5,
+        help="RBP patience for --expected-exposure (default: 0.5)",
+    )
+    parser.add_argument(
+        "--exposure-samples",
+        type=int,
+        default=50,
+        help="sampled rankings per user for --expected-exposure (default: 50)",
+    )
     return parser
 
 
@@ -180,6 +201,30 @@ def _sampled_columns(model, test_users, history_lists, relevant_lists, n_items, 
     return out
 
 
+def _exposure_columns(model, test_users, history_lists, relevant_lists, n_items, k,
+                      temperature, gamma, n_samples, seed):
+    """Mean expected-exposure metrics of a Plackett-Luce policy over the model's candidates."""
+    from .exposure import mean_expected_exposure, plackett_luce_rankings
+
+    rankings, universes = [], []
+    for i, (user, history) in enumerate(zip(test_users, history_lists)):
+        cands = model.recommend(user, k=3 * k, exclude=history)
+        rankings.append(
+            plackett_luce_rankings(
+                cands, rank_scores(len(cands)), n_samples=n_samples,
+                temperature=temperature, k=k, seed=seed + i,
+            ) if cands else [[]]
+        )
+        universes.append(max(n_items - len(history), len(set(cands) | set(relevant_lists[i]))))
+    ee = mean_expected_exposure(rankings, relevant_lists, gamma=gamma, k=k, n_candidates=universes)
+    return {
+        "EE-L": ee["loss"],
+        "EE-D": ee["disparity"],
+        "EE-R": ee["relevance"],
+        "EE-R/ideal": ee["normalized_relevance"],
+    }
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -193,6 +238,12 @@ def main(argv=None) -> int:
         parser.error("--sampled-negatives must be >= 1")
     if args.sampled_gamma < 0:
         parser.error("--sampled-gamma must be >= 0")
+    if args.expected_exposure is not None and args.expected_exposure < 0:
+        parser.error("--expected-exposure must be >= 0")
+    if not 0.0 < args.exposure_gamma < 1.0:
+        parser.error("--exposure-gamma must be in (0, 1)")
+    if args.exposure_samples < 1:
+        parser.error("--exposure-samples must be >= 1")
 
     interactions = generate_interactions(
         n_users=args.n_users,
@@ -300,6 +351,13 @@ def main(argv=None) -> int:
                 )
             )
         ndcg_by_model[name] = per_user_scores(ndcg_at_k, rec_lists, relevant_lists, k=args.k)
+        if args.expected_exposure is not None:
+            results[name].update(
+                _exposure_columns(
+                    model, test_users, history_lists, relevant_lists, args.n_items, args.k,
+                    args.expected_exposure, args.exposure_gamma, args.exposure_samples, args.seed,
+                )
+            )
         if args.diversify is not None:
             pool = args.k * args.diversify_pool
             rerank = mmr_rerank if args.diversify == "mmr" else dpp_rerank
@@ -333,6 +391,11 @@ def main(argv=None) -> int:
     if args.sampled_negatives is not None:
         summary["Sampled protocol"] = (
             f"{args.sampled_negatives} negatives, bias-variance correction gamma={args.sampled_gamma:g}"
+        )
+    if args.expected_exposure is not None:
+        summary["Expected exposure"] = (
+            f"Plackett-Luce T={args.expected_exposure:g} over top-{3 * args.k}, "
+            f"RBP gamma={args.exposure_gamma:g}, {args.exposure_samples} samples/user"
         )
     if args.diversify is not None:
         summary["Diversification"] = (
