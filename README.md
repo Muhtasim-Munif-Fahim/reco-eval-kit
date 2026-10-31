@@ -194,6 +194,17 @@ profile_unexpectedness(lists, histories, features)
 serendipity(lists, relevant, item_popularity=popularity)
 ```
 
+### Inter-user diversity: are users getting the same list?
+
+```python
+from reco_eval_kit.inter_user import personalization, recommendation_entropy, temporal_diversity
+
+personalization(lists, k=10)                       # 1 - mean pairwise cosine; 0 = everyone sees the same items
+personalization(lists, k=10, similarity="jaccard", max_users=2000, random_state=0)
+recommendation_entropy(lists, k=10, catalog=300, normalize=True)  # aggregate diversity in [0, 1]
+temporal_diversity(last_week_by_user, this_week_by_user, k=10)    # share of new items per user
+```
+
 ### Is model B really better than model A?
 
 ```python
