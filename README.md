@@ -341,6 +341,39 @@ r.min, r.ext, r.max
 
 From the CLI, `reco-eval-kit --rank-similarity 0.9` adds a model-by-model RBO@K matrix section to the report, followed by the three most similar pairs.
 
+## Online interleaving (team-draft, balanced, probabilistic)
+
+`reco_eval_kit.interleaving` simulates an online interleaving experiment
+between two models. Interleaving tells which ranker users prefer with far
+fewer impressions than comparing absolute click-through rates of two A/B
+buckets (Chapelle et al., TOIS 2012).
+
+- Merge two rankings with `team_draft_interleave` (Radlinski et al. 2008),
+  `balanced_interleave` (Joachims 2002) or `probabilistic_interleave`
+  (Hofmann et al. 2011, softmax `rank^-tau`).
+- Credit clicks with `team_draft_outcome`, `balanced_outcome` or
+  `probabilistic_outcome`. The probabilistic outcome is marginalised
+  exactly over team assignments by default.
+- Generate clicks with `cascade_clicks` (a dependent cascade model) or
+  `position_based_clicks` (examination probability `rank^-eta`), or pass
+  your own `(ranking, relevant, rng) -> positions` callable.
+- `simulate_interleaving(lists_a, lists_b, relevant_lists, k, method, n_impressions)`
+  returns wins, losses, ties, `delta = (wins + ties/2)/n - 0.5`, a 95% CI,
+  a sign-test p-value and `preferred`.
+
+```python
+from reco_eval_kit.interleaving import simulate_interleaving
+res = simulate_interleaving(lists_ease, lists_pop, relevant_lists, k=10, method="team-draft", n_impressions=2000)
+res.delta, res.p_value, res.preferred
+```
+
+From the CLI, `reco-eval-kit --interleave ease,popularity` adds an
+interleaving section to the report. Other options:
+
+- `--interleave-method team-draft|balanced|probabilistic|all`
+- `--interleave-impressions N`
+- `--interleave-clicks cascade|pbm`
+
 ## Expected exposure of stochastic rankings
 
 `reco_eval_kit.exposure` implements expected exposure (Diaz, Mitra, Ekstrand,
@@ -430,6 +463,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
     diversify.py         # MMR and greedy-DPP diversity re-ranking
+    interleaving.py      # team-draft / balanced / probabilistic interleaving + click simulators
     unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
     significance.py      # paired randomization / t / Wilcoxon tests, bootstrap CI, Holm
     user_groups.py       # activity / cold-start user segments and group-fairness audits
