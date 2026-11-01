@@ -157,6 +157,31 @@ def build_parser() -> argparse.ArgumentParser:
         "top-k lists with persistence P in (0, 1); for example 0.9",
     )
     parser.add_argument(
+        "--interleave",
+        default=None,
+        metavar="A,B",
+        help="add a simulated online interleaving comparison of two models (names as in the report), "
+        "e.g. 'ease,popularity'",
+    )
+    parser.add_argument(
+        "--interleave-method",
+        choices=("team-draft", "balanced", "probabilistic", "all"),
+        default="all",
+        help="interleaving method(s) for --interleave (default: all)",
+    )
+    parser.add_argument(
+        "--interleave-impressions",
+        type=int,
+        default=2000,
+        help="simulated impressions per method for --interleave (default: 2000)",
+    )
+    parser.add_argument(
+        "--interleave-clicks",
+        choices=("cascade", "pbm"),
+        default="cascade",
+        help="click model for --interleave: cascade or position-based (default: cascade)",
+    )
+    parser.add_argument(
         "--expected-exposure",
         type=float,
         default=None,
@@ -330,6 +355,16 @@ def main(argv=None) -> int:
 
     if args.rank_similarity is not None and not 0.0 < args.rank_similarity < 1.0:
         raise SystemExit("--rank-similarity must be in (0, 1)")
+    interleave_pair = None
+    if args.interleave is not None:
+        interleave_pair = [name.strip() for name in args.interleave.split(",")]
+        if len(interleave_pair) != 2 or interleave_pair[0] == interleave_pair[1]:
+            raise SystemExit("--interleave expects two different model names, e.g. 'ease,popularity'")
+        for name in interleave_pair:
+            if name not in models:
+                raise SystemExit(f"unknown --interleave model {name!r}; choose from: {', '.join(models)}")
+        if args.interleave_impressions < 2:
+            raise SystemExit("--interleave-impressions must be at least 2")
 
     results = {}
     ndcg_by_model = {}
@@ -442,6 +477,29 @@ def main(argv=None) -> int:
 
         matrix = pairwise_rank_similarity(lists_by_model, k=args.k, p=args.rank_similarity)
         markdown += "\n" + render_rank_similarity_section(matrix, args.k, args.rank_similarity)
+    if interleave_pair is not None:
+        from .interleaving import METHODS, render_interleaving_section, simulate_interleaving
+
+        name_a, name_b = interleave_pair
+        methods = METHODS if args.interleave_method == "all" else (args.interleave_method,)
+        interleaving = {
+            method: simulate_interleaving(
+                lists_by_model[name_a],
+                lists_by_model[name_b],
+                relevant_lists,
+                k=args.k,
+                method=method,
+                n_impressions=args.interleave_impressions,
+                click_model=args.interleave_clicks,
+                seed=args.seed,
+            )
+            for method in methods
+        }
+        markdown += "\n" + render_interleaving_section(
+            interleaving, name_a, name_b, args.k, args.interleave_clicks
+        )
+        for method, res in interleaving.items():
+            print(f"interleaving[{method}] {name_a} vs {name_b}: delta={res.delta:+.4f} p={res.p_value:.3g}")
     output_path = save_report(markdown, args.output)
 
     print(f"evaluated {len(models)} recommenders on {len(test_users)} test users")
