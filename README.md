@@ -404,6 +404,24 @@ temperature (`0` gives the deterministic ranking). In the CLI,
 model. Each model gets a Plackett-Luce policy over its top-3k candidates, and
 you can tune it with `--exposure-gamma` and `--exposure-samples`.
 
+## Score-based metrics: per-user AUC, GAUC, R-precision
+
+Use `reco_eval_kit.auc` to evaluate a candidate-ranking or CTR model on its
+full scored candidate list instead of only a top-K cutoff. Pooled AUC mixes users
+with very different base rates, so `gauc` (Group AUC, Zhu et al. 2017)
+averages per-user AUCs weighted by impressions, clicks, or uniformly. It skips
+users whose candidates are all positive or all negative.
+
+```python
+from reco_eval_kit.auc import gauc, list_auc, r_precision, user_auc
+
+user_auc({"a": 0.9, "b": 0.2, "c": 0.4}, {"a"})            # 1.0 (ties count half)
+res = gauc(user_scores, user_positives, weighting="impressions")
+res.gauc, res.n_users, res.n_skipped
+list_auc(ranked_items, relevant, catalog)   # unrecommended items tie at the bottom
+r_precision(ranked_items, relevant)         # precision at R = |relevant|
+```
+
 ## Metric conventions
 
 - Precision@K divides by the cutoff `k`, even when fewer items are recommended.
