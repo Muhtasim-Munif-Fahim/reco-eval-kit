@@ -21,6 +21,7 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   unexpectedness as `1 - p(item)` or cosine distance from a user's primitive
   profile, and serendipity as the mean of relevance × unexpectedness in the
   top-K.
+- **Subtopic diversity metrics**: alpha-nDCG@K (Clarke et al. 2008), which discounts each item's gain by `(1 - alpha)^c` for every subtopic already covered `c` times and normalizes by a greedy ideal list, plus subtopic recall (S-recall@K). Means over users skip users without judgments.
 - **User-group fairness**: segments users by activity (Li et al. 2021: the top 5% "advantaged" vs the rest), by activity quantiles, or by cold-start vs warm. For each segment it reports per-group metric means with CIs, the UGF gap, the min/max ratio, the CV and the Gini of group means, a label-permutation test, and Welch's t or Kruskal–Wallis.
 - **Calibration and popularity bias** — Steck (2018) calibration: the genre
   distribution of a history or list, `C_KL` miscalibration with the
@@ -192,6 +193,18 @@ intra_list_diversity(lists, features)
 unexpectedness(lists, popularity)
 profile_unexpectedness(lists, histories, features)
 serendipity(lists, relevant, item_popularity=popularity)
+```
+
+### Subtopic diversity: alpha-nDCG and S-recall
+
+```python
+from reco_eval_kit.subtopic import alpha_ndcg_at_k, subtopic_recall_at_k, mean_alpha_ndcg_at_k
+
+judged = {"a1": {"action"}, "a2": {"action"}, "c1": {"comedy"}}
+alpha_ndcg_at_k(["a1", "a2", "c1"], judged, k=3, alpha=0.5)  # ~0.965, redundant
+alpha_ndcg_at_k(["a1", "c1", "a2"], judged, k=3, alpha=0.5)  # 1.0, diverse
+subtopic_recall_at_k(["a1", "a2"], judged, k=2)              # 0.5
+mean_alpha_ndcg_at_k(lists, per_user_judgments, k=10)
 ```
 
 ### Inter-user diversity: are users getting the same list?
@@ -481,6 +494,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
     diversify.py         # MMR and greedy-DPP diversity re-ranking
+    subtopic.py          # alpha-nDCG@K and subtopic recall (novelty/diversity-aware)
     interleaving.py      # team-draft / balanced / probabilistic interleaving + click simulators
     unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
     significance.py      # paired randomization / t / Wilcoxon tests, bootstrap CI, Holm
