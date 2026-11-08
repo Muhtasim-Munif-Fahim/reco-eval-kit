@@ -54,6 +54,14 @@ and a small CLI that ties the whole loop together and writes a markdown report.
   feedback (Yang et al., RecSys 2018), with power-law popularity
   propensities `p ∝ n^((γ+1)/2)`, clipping, and Kish effective sample size.
   The CLI `--propensity-gamma` option adds SNIPS-Recall@K and SNIPS-NDCG@K.
+- **Click models and position-bias estimation** — estimate per-rank examination
+  propensities from logged `(query, item, position, click)` impressions instead of
+  assuming a power law: the position-based model `P(click) = theta_k * gamma_qd`
+  fitted by EM (`fit_position_based_model`, theta reported relative to rank 1),
+  the RandTop-n intervention estimator for randomized logs
+  (`randomization_propensities`, Joachims et al. 2017), cascade-model attractiveness
+  MLE (`fit_cascade_model`), a log-log `eta` fit for `p_k = k^-eta`
+  (`fit_power_law`), and held-out log-likelihood / per-rank click perplexity.
 - **Sampled-metric correction** — the sampled-negatives protocol (rank the held-out item
   among `m` random unseen items), with Krichene & Rendle (KDD 2020) hypergeometric
   bias-variance correction to full-catalog HR@K / NDCG@K (`--sampled-negatives`).
