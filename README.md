@@ -443,6 +443,21 @@ list_auc(ranked_items, relevant, catalog)   # unrecommended items tie at the bot
 r_precision(ranked_items, relevant)         # precision at R = |relevant|
 ```
 
+## Incomplete judgments: bpref, condensed lists, judged@K
+
+Offline test sets label only a small slice of the catalog. Standard metrics count every unlabelled item as non-relevant, so a model that surfaces good but never-shown items gets penalised. `reco_eval_kit.incomplete` takes judgments as `item -> gain`. A gain `> 0` marks a relevant item and `0` a judged non-relevant one; items left out of the mapping are unjudged.
+
+```python
+from reco_eval_kit.incomplete import bpref, condensed_ap_at_k, condensed_ndcg_at_k, judged_at_k
+
+qrels = {"a": 1, "b": 0, "c": 1, "d": 0, "e": 0}
+bpref(["x", "b", "a", "d", "c"], qrels)          # 0.25; unjudged "x" is ignored (trec_eval convention)
+condensed_ndcg_at_k(["x", "a", "y", "c"], qrels, 2)  # 1.0: unjudged items are dropped first (Sakai 2007)
+judged_at_k(["a", "x", "b", "y"], qrels, 4)       # 0.5: report next to any metric
+```
+
+`bpref` (Buckley & Voorhees 2004) is `1/R · Σ_r (1 − min(n_r, R) / min(R, N))`, where `n_r` counts the judged non-relevant items ranked above each retrieved relevant item. With complete judgments, the condensed metrics equal the standard `ndcg_at_k` / `average_precision_at_k`.
+
 ## Metric conventions
 
 - Precision@K divides by the cutoff `k`, even when fewer items are recommended.
@@ -502,6 +517,7 @@ src/reco_eval_kit/
     beyond_accuracy.py   # coverage, novelty, diversity, unexpectedness, serendipity
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
     diversify.py         # MMR and greedy-DPP diversity re-ranking
+    incomplete.py        # bpref, condensed-list nDCG/AP and judged@K for partial labels
     subtopic.py          # alpha-nDCG@K and subtopic recall (novelty/diversity-aware)
     interleaving.py      # team-draft / balanced / probabilistic interleaving + click simulators
     unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
