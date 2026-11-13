@@ -458,6 +458,29 @@ judged_at_k(["a", "x", "b", "y"], qrels, 4)       # 0.5: report next to any metr
 
 `bpref` (Buckley & Voorhees 2004) is `1/R · Σ_r (1 − min(n_r, R) / min(R, N))`, where `n_r` counts the judged non-relevant items ranked above each retrieved relevant item. With complete judgments, the condensed metrics equal the standard `ndcg_at_k` / `average_precision_at_k`.
 
+## Off-policy evaluation from logged bandit feedback
+
+`reco_eval_kit.off_policy` estimates how a new recommendation policy would perform from logs of a deployed one. Each log row records the shown action, its reward, and the logging propensity. Inputs are arrays: `actions` `(n,)`, `rewards` `(n,)`, `pscore` `(n,)`, the target policy's `action_dist` `(n, n_actions)`, and optionally a reward model's `estimated_rewards` `(n, n_actions)`.
+
+```python
+from reco_eval_kit.off_policy import evaluate_policy, doubly_robust_estimate
+
+res = evaluate_policy(actions, rewards, pscore, action_dist, estimated_rewards, max_weight=10, tau=10)
+for name, est in res.items():
+    print(name, round(est.value, 4), (round(est.ci_low, 4), round(est.ci_high, 4)), round(est.effective_sample_size))
+```
+
+| estimator | formula (`w = pi(a \| x) / mu(a \| x)`) | notes |
+| --- | --- | --- |
+| `ips` | `mean(w r)` | unbiased if the logging policy covers the target |
+| `snips` | `sum(w r) / sum(w)` | Swaminathan & Joachims 2015; delta-method CI |
+| `clipped_ips` | `mean(min(w, M) r)` | biased, lower variance |
+| `dm` | `mean sum_a pi(a \| x) q_hat(x, a)` | only as good as the reward model |
+| `dr` | `dm_i + w (r - q_hat(x, a))` | Dudik et al. 2011; unbiased if either propensities or model are right |
+| `switch_dr` | DR where `w <= tau`, DM elsewhere | Wang et al. 2017 |
+
+Each estimator returns an `OPEEstimate` (`value`, `std_error`, normal CI, `n`, Kish effective sample size of the weights). A low effective sample size warns that a few heavily up-weighted rows dominate.
+
 ## Metric conventions
 
 - Precision@K divides by the cutoff `k`, even when fewer items are recommended.
@@ -518,6 +541,7 @@ src/reco_eval_kit/
     calibration.py       # Steck calibration (C_KL, calibrated re-rank), Gini / ARP / APLT
     diversify.py         # MMR and greedy-DPP diversity re-ranking
     incomplete.py        # bpref, condensed-list nDCG/AP and judged@K for partial labels
+    off_policy.py        # IPS / SNIPS / clipped IPS / DM / DR / Switch-DR off-policy estimators
     subtopic.py          # alpha-nDCG@K and subtopic recall (novelty/diversity-aware)
     interleaving.py      # team-draft / balanced / probabilistic interleaving + click simulators
     unbiased.py          # IPS / SNIPS propensity-weighted metrics, power-law propensities
